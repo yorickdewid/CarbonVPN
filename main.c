@@ -28,13 +28,24 @@ void do_error(char *msg, ...) {
 	va_end(argp);
 }
 
+int create_socket() {
+	int sock_fd = 0;
+ 
+	if((sock_fd = socket(AF_INET, SOCK_DGRAM, 0))<0){
+		do_error("Cannot create socket\n");
+		return -1;
+	}
+
+ 	return sock_fd;
+}
+
 int set_tun(char *dev, int flags) {
 	struct ifreq ifr;
 	int fd, err;
 
 	if((fd = open("/dev/net/tun", O_RDWR)) < 0 ) {
 		do_error("Cannot open interface\n");
-		return fd;
+		return -1;
 	}
 
 	memset(&ifr, 0, sizeof(ifr));
@@ -51,6 +62,45 @@ int set_tun(char *dev, int flags) {
 
 	strcpy(dev, ifr.ifr_name);
 	return fd;
+}
+
+int set_ip(char *ifname, char *ip_addr) {
+	struct ifreq ifr;
+	struct sockaddr_in sin;
+	int sock_fd = create_socket();
+
+	sin.sin_family = AF_INET;
+
+	inet_aton(ip_addr, (struct in_addr *)&sin.sin_addr.s_addr);
+
+	strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+	memcpy(&ifr.ifr_addr, &sin, sizeof(struct sockaddr)); 
+
+	/* Set interface address */
+	if (ioctl(sock_fd, SIOCSIFADDR, &ifr)<0) {
+		do_error("Error setting ip address\n");
+		return -1;
+	}            
+
+	return sock_fd;
+}
+
+int set_netmask(int sock_fd, char *ifname, char *ip_addr_mask ) {
+	struct ifreq ifr;
+
+	struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
+	memset(&ifr, 0, sizeof(ifr));
+	sin->sin_family = AF_INET;
+	
+	inet_pton(AF_INET, ip_addr_mask, &sin->sin_addr);
+	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
+
+	if (ioctl(sock_fd, SIOCSIFNETMASK, &ifr)<0) {
+		do_error("Error setting netmask\n");
+		return -1;
+	}
+
+	return sock_fd;
 }
 
 void usage(char *name) {
@@ -133,6 +183,10 @@ int main(int argc, char *argv[]) {
 		net_fd = sock_fd;
 		printf("Connected to server %s\n", inet_ntoa(remote.sin_addr));
 	} else {
+		/* Server, set local addr */
+		int sock = set_ip(if_name, "10.7.0.1");
+		set_netmask(sock, if_name, "255.255.255.0" );
+
 		/* Avoid EADDRINUSE */
 		int _opval = 1;
 		if(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&_opval, sizeof(_opval)) < 0){
