@@ -15,6 +15,7 @@
 #include <sodium.h>
 
 #include "endian.h"
+#include "logger.h"
 #include "util.h"
 
 #define BUFSIZE		2048
@@ -169,6 +170,8 @@ int main(int argc, char *argv[]) {
 	unsigned char master_pk[crypto_box_PUBLICKEYBYTES];
 	unsigned char master_sk[crypto_box_SECRETKEYBYTES];
 
+	start_log();
+
 	/* Check command line options */
 	while((option = getopt(argc, argv, "i:c:p:ahv"))>0){
 		switch(option) {
@@ -236,7 +239,7 @@ int main(int argc, char *argv[]) {
 		}
 
 		net_fd = sock_fd;
-		printf("Connected to server %s\n", inet_ntoa(remote.sin_addr));
+		lprintf("Connected to server %s\n", inet_ntoa(remote.sin_addr));
 	} else {
 		/* Server, set local addr */
 		int sock = set_ip(if_name, "10.7.0.1");
@@ -263,6 +266,8 @@ int main(int argc, char *argv[]) {
 			goto error;
 		}
 
+		lprint("Server listening\n");
+
 		/* Wait for request */
 		socklen_t remotelen = sizeof(remote);
 		memset(&remote, 0, remotelen);
@@ -271,7 +276,7 @@ int main(int argc, char *argv[]) {
 			goto error;
 		}
 
-		printf("Client connected from %s\n", inet_ntoa(remote.sin_addr));
+		lprintf("Client connected from %s\n", inet_ntoa(remote.sin_addr));
 	}
 
 	int maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
@@ -336,6 +341,7 @@ int main(int argc, char *argv[]) {
 
 error:
 	sodium_memzero(master_pk, sizeof(master_pk));
+	stop_log();
 
 	return 0;
 }
