@@ -1,12 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
 #include <arpa/inet.h>
-#include <sys/ioctl.h>
+#include <sys/select.h>
 #include <stdarg.h>
 #include <getopt.h>
 #include <errno.h>
@@ -14,11 +16,6 @@
 #define BUFSIZE		2048
 #define DEF_PORT	5059
 #define DEF_IFNAME	"tun0"
-
-/* Common lengths */
-#define IP_HDR_LEN 20
-#define ETH_HDR_LEN 14
-#define ARP_PKT_LEN 28
 
 static int debug = 0;
 
@@ -73,7 +70,7 @@ int set_ip(char *ifname, char *ip_addr) {
 
 	sin.sin_family = AF_INET;
 
-	inet_aton(ip_addr, (struct in_addr *)&sin.sin_addr.s_addr);
+	inet_pton(AF_INET, ip_addr, &sin.sin_addr);
 
 	strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
 	memcpy(&ifr.ifr_addr, &sin, sizeof(struct sockaddr)); 
@@ -157,7 +154,6 @@ int main(int argc, char *argv[]) {
 	char remote_ip[16];
 	int tap_fd, sock_fd, net_fd, option, server = 1;
 	unsigned short int port = DEF_PORT;
-	int header_len = IP_HDR_LEN;
 	struct sockaddr_in local, remote;
 
 	/* Check command line options */
@@ -181,7 +177,6 @@ int main(int argc, char *argv[]) {
 				break;
 			case 'a':
 				flags = IFF_TAP;
-				header_len = ETH_HDR_LEN;
 				break;
 			default:
 				do_error("Unknown option %c\n", option);
