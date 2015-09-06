@@ -12,6 +12,9 @@
 #include <stdarg.h>
 #include <getopt.h>
 #include <errno.h>
+#include <sodium.h>
+
+#include "util.h"
 
 #define BUFSIZE		2048
 #define DEF_PORT	5059
@@ -53,7 +56,7 @@ int set_tun(char *dev, int flags) {
 	if (*dev)
 		strncpy(ifr.ifr_name, dev, IFNAMSIZ);
 
-	if((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
+	if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
 		do_error("Error setting interface\n");
 		close(fd);
 		return err;
@@ -155,6 +158,8 @@ int main(int argc, char *argv[]) {
 	int tap_fd, sock_fd, net_fd, option, server = 1;
 	unsigned short int port = DEF_PORT;
 	struct sockaddr_in local, remote;
+	unsigned char master_pk[crypto_box_PUBLICKEYBYTES];
+	unsigned char master_sk[crypto_box_SECRETKEYBYTES];
 
 	/* Check command line options */
 	while((option = getopt(argc, argv, "i:c:p:ahv"))>0){
@@ -188,16 +193,25 @@ int main(int argc, char *argv[]) {
 	argv += optind;
 	argc -= optind;
 
+	/* Initialize NaCl */
+	sodium_init();
+
 	/* Initialize tun/tap interface */
 	if ((tap_fd = set_tun(if_name, flags | IFF_NO_PI)) < 0 ) {
 		do_error("Error connecting to tun/tap interface %s\n", if_name);
-		return 1;
+		goto error;
 	}
 
 	if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0))<0) {
 		do_error("Error opening new socket\n");
-		exit(1);
+		goto error;
 	}
+
+	/* Generate keypar */
+	printf("Primitive %s\n", crypto_box_primitive());
+	crypto_box_keypair(master_pk, master_sk);
+	printf("Public master key: ");
+	print_hex(master_pk, sizeof(master_pk));
 
 	/* Client or server mode */
 	if (!server) {
@@ -210,7 +224,7 @@ int main(int argc, char *argv[]) {
 		/* Connection request */
 		if (connect(sock_fd, (struct sockaddr*)&remote, sizeof(remote))<0){
 			do_error("Error connecting to server\n");
-			return 1;
+			goto error;
 		}
 
 		net_fd = sock_fd;
@@ -218,13 +232,13 @@ int main(int argc, char *argv[]) {
 	} else {
 		/* Server, set local addr */
 		int sock = set_ip(if_name, "10.7.0.1");
-		set_netmask(sock, if_name, "255.255.255.0" );
+		set_netmask(sock, if_name, "255.255.255.0");
 
 		/* Avoid EADDRINUSE */
 		int _opval = 1;
 		if(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&_opval, sizeof(_opval)) < 0){
 			do_error("Error setting socket\n");
-			return 1;
+			goto error;
 		}
 
 		memset(&local, 0, sizeof(local));
@@ -233,12 +247,12 @@ int main(int argc, char *argv[]) {
 		local.sin_port = htons(port);
 		if (bind(sock_fd, (struct sockaddr*)&local, sizeof(local)) < 0){
 			do_error("Error cannot bind to port\n");
-			return 1;
+			goto error;
 		}
 
 		if (listen(sock_fd, 5) < 0){
 			do_error("Error listen on socket\n");
-			return 1;
+			goto error;
 		}
 
 		/* Wait for request */
@@ -246,7 +260,7 @@ int main(int argc, char *argv[]) {
 		memset(&remote, 0, remotelen);
 		if ((net_fd = accept(sock_fd, (struct sockaddr*)&remote, &remotelen)) < 0){
 			do_error("Error cannot accpet connection\n");
-			return 1;
+			goto error;
 		}
 
 		printf("Client connected from %s\n", inet_ntoa(remote.sin_addr));
@@ -270,7 +284,7 @@ int main(int argc, char *argv[]) {
 
 		if (ret < 0) {
 			do_error("No descriptors in queue\n");
-			return 1;
+			goto error;
 		}
 
 		/* Action on TUN */
@@ -304,6 +318,9 @@ int main(int argc, char *argv[]) {
 			printf("Wrote %d bytes to tun\n", nwrite);
 		}
 	}
+
+error:
+	sodium_memzero(master_pk, sizeof(master_pk));
 
 	return 0;
 }
