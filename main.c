@@ -9,7 +9,9 @@
 #include <sys/ioctl.h>
 #include <stdarg.h>
 #include <getopt.h>
+#include <errno.h>
 
+#define BUFSIZE		2048
 #define DEF_PORT	5059
 #define DEF_IFNAME	"tun0"
 
@@ -103,6 +105,42 @@ int set_netmask(int sock_fd, char *ifname, char *ip_addr_mask ) {
 	return sock_fd;
 }
 
+int fd_read(int fd, char *buf, int n){
+	int nread;
+
+	if((nread = read(fd, buf, n))<0){
+		do_error("Cannot read descriptor\n");
+		return -1;
+	}
+	return nread;
+}
+
+int fd_write(int fd, char *buf, int n){
+	int nwrite;
+
+	if((nwrite = write(fd, buf, n))<0){
+		do_error("Cannot write to descriptor\n");
+		return -1;
+	}
+	return nwrite;
+}
+
+int fd_count(int fd, char *buf, int n) {
+	int nread, left = n;
+
+	/* Read until buffer is 0 */
+	while (left > 0) {
+		if (!(nread = fd_read(fd, buf, left))){
+			do_error("Cannot count descriptor buffer\n");
+			return -1;
+		}else {
+			left -= nread;
+			buf += nread;
+		}
+	}
+	return n;
+}
+
 void usage(char *name) {
 	fprintf(stderr, "Usage: %s -i <interface> [-c <address>] [-p <port>] [-a] [-v]\n\n", name);
 	fprintf(stderr, "Options\n");
@@ -131,7 +169,7 @@ int main(int argc, char *argv[]) {
 				break;
 			case 'h':
 				usage(argv[0]);
-				break;
+				return 1;
 			case 'i':
 				strncpy(if_name, optarg, IFNAMSIZ-1);
 				break;
@@ -149,6 +187,7 @@ int main(int argc, char *argv[]) {
 			default:
 				do_error("Unknown option %c\n", option);
 				usage(argv[0]);
+				return 1;
 			}
 	}
 
@@ -217,6 +256,57 @@ int main(int argc, char *argv[]) {
 		}
 
 		printf("Client connected from %s\n", inet_ntoa(remote.sin_addr));
+	}
+
+	int maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
+	while(1) {
+		char buffer[BUFSIZE];
+		unsigned short nread, nwrite, plen;
+		fd_set rd_set;
+
+		FD_ZERO(&rd_set);
+		FD_SET(tap_fd, &rd_set);
+		FD_SET(net_fd, &rd_set);
+
+		/* Listen on fds */
+		int ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
+		if (ret < 0 && errno == EINTR){
+			continue;
+		}
+
+		if (ret < 0) {
+			do_error("No descriptors in queue\n");
+			return 1;
+		}
+
+		/* Action on TUN */
+		if(FD_ISSET(tap_fd, &rd_set)){
+			nread = fd_read(tap_fd, buffer, BUFSIZE);
+
+			printf("Read %d bytes from tun\n", nread);
+
+			/* Write packet */
+			plen = htons(nread);
+			nwrite = fd_write(net_fd, (char *)&plen, sizeof(plen));
+			nwrite = fd_write(net_fd, buffer, nread);
+
+			printf("Wrote %d bytes to socket\n", nwrite);
+		}
+
+		/* Action on socket */
+		if(FD_ISSET(net_fd, &rd_set)){
+			nread = fd_count(net_fd, (char *)&plen, sizeof(plen));
+			if(!nread)
+				break;
+
+			printf("Read %d bytes from socket\n", nread);
+
+			/* Read packet */
+			nread = fd_count(net_fd, buffer, ntohs(plen));
+			nwrite = fd_write(tap_fd, buffer, nread);
+
+			printf("Wrote %d bytes to tun\n", nwrite);
+		}
 	}
 
 	return 0;
