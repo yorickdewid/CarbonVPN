@@ -21,6 +21,13 @@
 #define DEF_IFNAME	"tun0"
 
 static int debug = 0;
+const static unsigned short version = 7;
+
+struct wrapper {
+	unsigned int client_id;
+	unsigned short version;
+	unsigned short data_len;
+} __attribute__ ((packed));
 
 void do_error(char *msg, ...) {
 	va_list argp;
@@ -269,8 +276,9 @@ int main(int argc, char *argv[]) {
 	int maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
 	while(1) {
 		char buffer[BUFSIZE];
-		unsigned short nread, nwrite, plen;
+		unsigned short nread, nwrite;
 		fd_set rd_set;
+		struct wrapper encap;
 
 		FD_ZERO(&rd_set);
 		FD_SET(tap_fd, &rd_set);
@@ -293,9 +301,12 @@ int main(int argc, char *argv[]) {
 
 			printf("Read %d bytes from tun\n", nread);
 
+			encap.client_id = htonl(1);
+			encap.version = htons(version);
+			encap.data_len = htons(nread);
+
 			/* Write packet */
-			plen = htons(nread);
-			nwrite = fd_write(net_fd, (char *)&plen, sizeof(plen));
+			nwrite = fd_write(net_fd, (char *)&encap, sizeof(encap));
 			nwrite = fd_write(net_fd, buffer, nread);
 
 			printf("Wrote %d bytes to socket\n", nwrite);
@@ -303,16 +314,19 @@ int main(int argc, char *argv[]) {
 
 		/* Action on socket */
 		if(FD_ISSET(net_fd, &rd_set)){
-			nread = fd_count(net_fd, (char *)&plen, sizeof(plen));
+			nread = fd_count(net_fd, (char *)&encap, sizeof(encap));
 			if(nread == 0) {
 				close(net_fd);
 				continue;
 			}
+			printf("Client %d\n", ntohl(encap.client_id));
+			printf("Version %d\n", ntohs(encap.version));
+			printf("Len %d\n", ntohs(encap.data_len));
 
 			printf("Read %d bytes from socket\n", nread);
 
 			/* Read packet */
-			nread = fd_count(net_fd, buffer, ntohs(plen));
+			nread = fd_count(net_fd, buffer, ntohs(encap.data_len));
 			nwrite = fd_write(tap_fd, buffer, nread);
 
 			printf("Wrote %d bytes to tun\n", nwrite);
