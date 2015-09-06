@@ -10,6 +10,7 @@
 #include <getopt.h>
 
 #define DEF_PORT	5059
+#define DEF_IFNAME	"tun0"
 
 /* Common lengths */
 #define IP_HDR_LEN 20
@@ -52,30 +53,28 @@ int set_tun(char *dev, int flags) {
 }
 
 void usage(char *name) {
-	fprintf(stderr, "Usage:\n");
-	fprintf(stderr, "%s -i <ifacename> [-c <serverIP>] [-p <port>] [-u|-a] [-d]\n", name);
-	fprintf(stderr, "%s -h\n", name);
-	fprintf(stderr, "\n");
-	fprintf(stderr, "-i <ifacename>: Name of interface to use (mandatory)\n");
-	fprintf(stderr, "-c <serverIP>: run in server mode (-s), or specify server address (-c <serverIP>) (mandatory)\n");
-	fprintf(stderr, "-p <port>: port to listen on (if run in server mode) or to connect to (in client mode), default %u\n", DEF_PORT);
-	fprintf(stderr, "-u|-a: use TUN (-u, default) or TAP (-a)\n");
-	fprintf(stderr, "-d: outputs debug information while running\n");
-	fprintf(stderr, "-h: prints this help text\n");
+	fprintf(stderr, "Usage: %s -i <interface> [-c <address>] [-p <port>] [-a] [-v]\n\n", name);
+	fprintf(stderr, "Options\n");
+	fprintf(stderr, "  -i <interface>  Use specific interface (Default: " DEF_IFNAME ")\n");
+	fprintf(stderr, "  -c <address>    Connect to remote VPN server (Enables client mode)\n");
+	fprintf(stderr, "  -p <port>       Bind to port or connect to port (Default: %u)\n", DEF_PORT);
+	fprintf(stderr, "  -a              Use TAP interface (Default: TUN)\n");
+	fprintf(stderr, "  -v              Verbose output\n");
+	fprintf(stderr, "  -h              This help text\n");
 }
 
 int main(int argc, char *argv[]) {
 	int flags = IFF_TUN;
-	char if_name[IFNAMSIZ];
+	char if_name[IFNAMSIZ] = DEF_IFNAME;
 	char remote_ip[16];
 	int tap_fd, option, server = 1;
 	unsigned short int port = DEF_PORT;
 	int header_len = IP_HDR_LEN;
 
 	/* Check command line options */
-	while((option = getopt(argc, argv, "i:c:p:uahd"))>0){
+	while((option = getopt(argc, argv, "i:c:p:ahv"))>0){
 		switch(option) {
-			case 'd':
+			case 'v':
 				debug = 1;
 				break;
 			case 'h':
@@ -90,9 +89,6 @@ int main(int argc, char *argv[]) {
 				break;
 			case 'p':
 				port = atoi(optarg);
-				break;
-			case 'u':
-				flags = IFF_TUN;
 				break;
 			case 'a':
 				flags = IFF_TAP;
