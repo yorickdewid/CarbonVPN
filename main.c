@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#include <arpa/inet.h>
 #include <sys/ioctl.h>
 #include <stdarg.h>
 #include <getopt.h>
@@ -32,7 +33,7 @@ int set_tun(char *dev, int flags) {
 	int fd, err;
 
 	if((fd = open("/dev/net/tun", O_RDWR)) < 0 ) {
-		perror("Opening /dev/net/tun");
+		do_error("Cannot open interface\n");
 		return fd;
 	}
 
@@ -43,7 +44,7 @@ int set_tun(char *dev, int flags) {
 		strncpy(ifr.ifr_name, dev, IFNAMSIZ);
 
 	if((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
-		perror("ioctl(TUNSETIFF)");
+		do_error("Error setting interface\n");
 		close(fd);
 		return err;
 	}
@@ -67,9 +68,10 @@ int main(int argc, char *argv[]) {
 	int flags = IFF_TUN;
 	char if_name[IFNAMSIZ] = DEF_IFNAME;
 	char remote_ip[16];
-	int tap_fd, option, server = 1;
+	int tap_fd, sock_fd, net_fd, option, server = 1;
 	unsigned short int port = DEF_PORT;
 	int header_len = IP_HDR_LEN;
+	struct sockaddr_in local, remote;
 
 	/* Check command line options */
 	while((option = getopt(argc, argv, "i:c:p:ahv"))>0){
@@ -100,10 +102,67 @@ int main(int argc, char *argv[]) {
 			}
 	}
 
+	argv += optind;
+	argc -= optind;
+
 	/* Initialize tun/tap interface */
 	if ((tap_fd = set_tun(if_name, flags | IFF_NO_PI)) < 0 ) {
-		do_error("Error connecting to tun/tap interface %s!\n", if_name);
+		do_error("Error connecting to tun/tap interface %s\n", if_name);
+		return 1;
+	}
+
+	if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0))<0) {
+		do_error("Error opening new socket\n");
 		exit(1);
+	}
+
+	/* Client or server mode */
+	if (!server) {
+		/* Assign the destination address */
+		memset(&remote, 0, sizeof(remote));
+		remote.sin_family = AF_INET;
+		remote.sin_addr.s_addr = inet_addr(remote_ip);
+		remote.sin_port = htons(port);
+
+		/* Connection request */
+		if (connect(sock_fd, (struct sockaddr*)&remote, sizeof(remote))<0){
+			do_error("Error connecting to server\n");
+			return 1;
+		}
+
+		net_fd = sock_fd;
+		printf("Connected to server %s\n", inet_ntoa(remote.sin_addr));
+	} else {
+		/* Avoid EADDRINUSE */
+		int _opval = 1;
+		if(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&_opval, sizeof(_opval)) < 0){
+			do_error("Error setting socket\n");
+			return 1;
+		}
+
+		memset(&local, 0, sizeof(local));
+		local.sin_family = AF_INET;
+		local.sin_addr.s_addr = htonl(INADDR_ANY);
+		local.sin_port = htons(port);
+		if (bind(sock_fd, (struct sockaddr*)&local, sizeof(local)) < 0){
+			do_error("Error cannot bind to port\n");
+			return 1;
+		}
+
+		if (listen(sock_fd, 5) < 0){
+			do_error("Error listen on socket\n");
+			return 1;
+		}
+
+		/* Wait for request */
+		socklen_t remotelen = sizeof(remote);
+		memset(&remote, 0, remotelen);
+		if ((net_fd = accept(sock_fd, (struct sockaddr*)&remote, &remotelen)) < 0){
+			do_error("Error cannot accpet connection\n");
+			return 1;
+		}
+
+		printf("Client connected from %s\n", inet_ntoa(remote.sin_addr));
 	}
 
 	return 0;
