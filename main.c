@@ -7,6 +7,16 @@
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
 #include <stdarg.h>
+#include <getopt.h>
+
+#define DEF_PORT	5059
+
+/* Common lengths */
+#define IP_HDR_LEN 20
+#define ETH_HDR_LEN 14
+#define ARP_PKT_LEN 28
+
+static int debug = 0;
 
 void do_error(char *msg, ...) {
 	va_list argp;
@@ -41,12 +51,58 @@ int set_tun(char *dev, int flags) {
 	return fd;
 }
 
+void usage(char *name) {
+	fprintf(stderr, "Usage:\n");
+	fprintf(stderr, "%s -i <ifacename> [-c <serverIP>] [-p <port>] [-u|-a] [-d]\n", name);
+	fprintf(stderr, "%s -h\n", name);
+	fprintf(stderr, "\n");
+	fprintf(stderr, "-i <ifacename>: Name of interface to use (mandatory)\n");
+	fprintf(stderr, "-c <serverIP>: run in server mode (-s), or specify server address (-c <serverIP>) (mandatory)\n");
+	fprintf(stderr, "-p <port>: port to listen on (if run in server mode) or to connect to (in client mode), default %u\n", DEF_PORT);
+	fprintf(stderr, "-u|-a: use TUN (-u, default) or TAP (-a)\n");
+	fprintf(stderr, "-d: outputs debug information while running\n");
+	fprintf(stderr, "-h: prints this help text\n");
+}
+
 int main(int argc, char *argv[]) {
 	int flags = IFF_TUN;
 	char if_name[IFNAMSIZ];
-	int tap_fd;
+	char remote_ip[16];
+	int tap_fd, option, server = 1;
+	unsigned short int port = DEF_PORT;
+	int header_len = IP_HDR_LEN;
 
-	strncpy(if_name, "tun0", IFNAMSIZ-1);
+	/* Check command line options */
+	while((option = getopt(argc, argv, "i:c:p:uahd"))>0){
+		switch(option) {
+			case 'd':
+				debug = 1;
+				break;
+			case 'h':
+				usage(argv[0]);
+				break;
+			case 'i':
+				strncpy(if_name, optarg, IFNAMSIZ-1);
+				break;
+			case 'c':
+				server = 0;
+				strncpy(remote_ip, optarg, 15);
+				break;
+			case 'p':
+				port = atoi(optarg);
+				break;
+			case 'u':
+				flags = IFF_TUN;
+				break;
+			case 'a':
+				flags = IFF_TAP;
+				header_len = ETH_HDR_LEN;
+				break;
+			default:
+				do_error("Unknown option %c\n", option);
+				usage(argv[0]);
+			}
+	}
 
 	/* Initialize tun/tap interface */
 	if ((tap_fd = set_tun(if_name, flags | IFF_NO_PI)) < 0 ) {
