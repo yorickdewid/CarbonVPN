@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <sodium.h>
 
+#include "endian.h"
 #include "util.h"
 
 #define BUFSIZE		2048
@@ -148,7 +149,7 @@ int fd_count(int fd, char *buf, int n) {
 }
 
 void usage(char *name) {
-	fprintf(stderr, "Usage: %s -i <interface> [-c <address>] [-p <port>] [-a] [-v]\n\n", name);
+	fprintf(stderr, "Usage: %s [OPTIONS]\n", name);
 	fprintf(stderr, "Options\n");
 	fprintf(stderr, "  -i <interface>  Use specific interface (Default: " DEF_IFNAME ")\n");
 	fprintf(stderr, "  -c <address>    Connect to remote VPN server (Enables client mode)\n");
@@ -319,14 +320,14 @@ int main(int argc, char *argv[]) {
 				close(net_fd);
 				continue;
 			}
-			printf("Client %d\n", ntohl(encap.client_id));
-			printf("Version %d\n", ntohs(encap.version));
-			printf("Len %d\n", ntohs(encap.data_len));
+			printf("Client %d\n", swap16(encap.client_id));
+			printf("Version %d\n", swap32(encap.version));
+			printf("Len %d\n", swap32(encap.data_len));
 
 			printf("Read %d bytes from socket\n", nread);
 
 			/* Read packet */
-			nread = fd_count(net_fd, buffer, ntohs(encap.data_len));
+			nread = fd_count(net_fd, buffer, swap32(encap.data_len));
 			nwrite = fd_write(tap_fd, buffer, nread);
 
 			printf("Wrote %d bytes to tun\n", nwrite);
