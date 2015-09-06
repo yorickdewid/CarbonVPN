@@ -131,8 +131,7 @@ int fd_count(int fd, char *buf, int n) {
 	/* Read until buffer is 0 */
 	while (left > 0) {
 		if (!(nread = fd_read(fd, buf, left))){
-			do_error("Cannot count descriptor buffer\n");
-			return -1;
+			return 0;
 		}else {
 			left -= nread;
 			buf += nread;
@@ -296,8 +295,10 @@ int main(int argc, char *argv[]) {
 		/* Action on socket */
 		if(FD_ISSET(net_fd, &rd_set)){
 			nread = fd_count(net_fd, (char *)&plen, sizeof(plen));
-			if(!nread)
-				break;
+			if(nread == 0) {
+				close(net_fd);
+				continue;
+			}
 
 			printf("Read %d bytes from socket\n", nread);
 
