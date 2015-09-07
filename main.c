@@ -31,19 +31,11 @@ struct wrapper {
 	unsigned short data_len;
 } __attribute__ ((packed));
 
-void do_error(char *msg, ...) {
-	va_list argp;
-  
-	va_start(argp, msg);
-	vfprintf(stderr, msg, argp);
-	va_end(argp);
-}
-
 int create_socket() {
 	int sock_fd = 0;
  
 	if((sock_fd = socket(AF_INET, SOCK_DGRAM, 0))<0){
-		do_error("Cannot create socket\n");
+		lprint("[erro] Cannot create socket\n");
 		return -1;
 	}
 
@@ -55,7 +47,7 @@ int set_tun(char *dev, int flags) {
 	int fd, err;
 
 	if((fd = open("/dev/net/tun", O_RDWR)) < 0 ) {
-		do_error("Cannot open interface\n");
+		lprint("[erro] Cannot create interface\n");
 		return -1;
 	}
 
@@ -66,7 +58,7 @@ int set_tun(char *dev, int flags) {
 		strncpy(ifr.ifr_name, dev, IFNAMSIZ);
 
 	if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
-		do_error("Error setting interface\n");
+		lprint("[erro] Cannot set interface\n");
 		close(fd);
 		return err;
 	}
@@ -89,7 +81,7 @@ int set_ip(char *ifname, char *ip_addr) {
 
 	/* Set interface address */
 	if (ioctl(sock_fd, SIOCSIFADDR, &ifr)<0) {
-		do_error("Error setting ip address\n");
+		lprint("[erro] Cannot set ip address\n");
 		return -1;
 	}            
 
@@ -107,7 +99,7 @@ int set_netmask(int sock_fd, char *ifname, char *ip_addr_mask ) {
 	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
 
 	if (ioctl(sock_fd, SIOCSIFNETMASK, &ifr)<0) {
-		do_error("Error setting netmask\n");
+		lprint("[erro] Cannot set netmask\n");
 		return -1;
 	}
 
@@ -118,7 +110,7 @@ int fd_read(int fd, char *buf, int n){
 	int nread;
 
 	if((nread = read(fd, buf, n))<0){
-		do_error("Cannot read descriptor\n");
+		lprint("[warn] Cannot read device\n");
 		return -1;
 	}
 	return nread;
@@ -128,7 +120,7 @@ int fd_write(int fd, char *buf, int n){
 	int nwrite;
 
 	if((nwrite = write(fd, buf, n))<0){
-		do_error("Cannot write to descriptor\n");
+		lprint("[warn] Cannot write device\n");
 		return -1;
 	}
 	return nwrite;
@@ -195,7 +187,7 @@ int main(int argc, char *argv[]) {
 				flags = IFF_TAP;
 				break;
 			default:
-				do_error("Unknown option %c\n", option);
+				fprintf(stderr, "Unknown option %c\n", option);
 				usage(argv[0]);
 				return 1;
 			}
@@ -209,12 +201,12 @@ int main(int argc, char *argv[]) {
 
 	/* Initialize tun/tap interface */
 	if ((tap_fd = set_tun(if_name, flags | IFF_NO_PI)) < 0 ) {
-		do_error("Error connecting to tun/tap interface %s\n", if_name);
+		lprintf("[erro] Cannot connect to %s\n", if_name);
 		goto error;
 	}
 
 	if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0))<0) {
-		do_error("Error opening new socket\n");
+		lprint("[erro] Cannot create socket\n");
 		goto error;
 	}
 
@@ -223,6 +215,8 @@ int main(int argc, char *argv[]) {
 	crypto_box_keypair(master_pk, master_sk);
 	printf("Public master key: ");
 	print_hex(master_pk, sizeof(master_pk));
+
+	lprintf("[info] Protocol version %u\n", version);
 
 	/* Client or server mode */
 	if (!server) {
@@ -234,12 +228,12 @@ int main(int argc, char *argv[]) {
 
 		/* Connection request */
 		if (connect(sock_fd, (struct sockaddr*)&remote, sizeof(remote))<0){
-			do_error("Error connecting to server\n");
+			lprint("[erro] Cannot connect to server\n");
 			goto error;
 		}
 
 		net_fd = sock_fd;
-		lprintf("Connected to server %s\n", inet_ntoa(remote.sin_addr));
+		lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
 	} else {
 		/* Server, set local addr */
 		int sock = set_ip(if_name, "10.7.0.1");
@@ -248,7 +242,7 @@ int main(int argc, char *argv[]) {
 		/* Avoid EADDRINUSE */
 		int _opval = 1;
 		if(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&_opval, sizeof(_opval)) < 0){
-			do_error("Error setting socket\n");
+			lprint("[erro] Cannot set socket options\n");
 			goto error;
 		}
 
@@ -257,26 +251,26 @@ int main(int argc, char *argv[]) {
 		local.sin_addr.s_addr = htonl(INADDR_ANY);
 		local.sin_port = htons(port);
 		if (bind(sock_fd, (struct sockaddr*)&local, sizeof(local)) < 0){
-			do_error("Error cannot bind to port\n");
+			lprintf("[erro] Cannot bind to port %d\n", port);
 			goto error;
 		}
 
 		if (listen(sock_fd, 5) < 0){
-			do_error("Error listen on socket\n");
+			lprint("[erro] Cannot listen on socket\n");
 			goto error;
 		}
 
-		lprint("Server listening\n");
+		lprint("[info] Accepting connections\n");
 
 		/* Wait for request */
 		socklen_t remotelen = sizeof(remote);
 		memset(&remote, 0, remotelen);
 		if ((net_fd = accept(sock_fd, (struct sockaddr*)&remote, &remotelen)) < 0){
-			do_error("Error cannot accpet connection\n");
+			lprint("[erro] Cannot accept connection\n");
 			goto error;
 		}
 
-		lprintf("Client connected from %s\n", inet_ntoa(remote.sin_addr));
+		lprintf("[info] Client connected from %s\n", inet_ntoa(remote.sin_addr));
 	}
 
 	int maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
@@ -297,7 +291,7 @@ int main(int argc, char *argv[]) {
 		}
 
 		if (ret < 0) {
-			do_error("No descriptors in queue\n");
+			lprint("[warn] No devices in list\n");
 			goto error;
 		}
 
