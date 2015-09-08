@@ -25,6 +25,7 @@
 #define DEF_IFNAME			"tun0"
 #define DEF_ROUTER_ADDR		"10.7.0.1"
 #define DEF_NETMASK			"255.255.255.0"
+#define DEF_MAX_CLIENTS		20
 
 #define PACKET_MAGIC		0xdeadbaba
 
@@ -35,7 +36,8 @@ typedef struct {
 	char *if_name;
 	char *ip;
 	char *ip_netmask;
-	unsigned short debug;
+	unsigned char debug;
+	unsigned char max_conn;
 } config_t;
 
 enum mode {
@@ -71,6 +73,8 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 		pcfg->ip_netmask = strdup(value);
 	} else if (!strcmp(name, "debug")) {
 		pcfg->debug = value[0] == 't' ? 1 : 0;
+	} else if (!strcmp(name, "max_clients")) {
+		pcfg->max_conn = atoi(value);
 	} else {
 		return 0;
 	}
@@ -131,12 +135,12 @@ int set_ip(char *ifname, char *ip_addr) {
 		return -1;
 	}
 
-	/* Ensure the interface is up */
 	if (ioctl(sock_fd, SIOCGIFFLAGS, &ifr)<0) {
 		lprint("[erro] Cannot get interface\n");
 		return -1;
 	}
 
+	/* Ensure the interface is up */
 	ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
 	if (ioctl(sock_fd, SIOCSIFFLAGS, &ifr)<0) {
 		lprint("[erro] Cannot set interface\n");
@@ -223,7 +227,8 @@ int main(int argc, char *argv[]) {
 		.if_name = strdup(DEF_IFNAME),
 		.ip = strdup(DEF_ROUTER_ADDR),
 		.ip_netmask = strdup(DEF_NETMASK),
-		.debug = 0
+		.debug = 0,
+		.max_conn = DEF_MAX_CLIENTS
 	};
 
 	/* Start log */
