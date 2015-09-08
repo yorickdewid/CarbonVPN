@@ -16,14 +16,25 @@
 
 #include "endian.h"
 #include "logger.h"
+#include "conf.h"
 #include "util.h"
 
-#define BUFSIZE		2048
-#define DEF_PORT	5059
-#define DEF_IFNAME	"tun0"
+#define BUFSIZE				2048
+#define CERTSIZE			128
+#define DEF_PORT			5059
+#define DEF_IFNAME			"tun0"
+#define DEF_ROUTER_ADDR		"10.7.0.1"
+#define DEF_NETMASK			"255.255.255.0"
 
-static int debug = 0;
 const static unsigned short version = 7;
+
+typedef struct {
+	unsigned short port;
+	char *if_name;
+	char *ip;
+	char *ip_netmask;
+	unsigned short debug;
+} config_t;
 
 struct wrapper {
 	unsigned int client_id;
@@ -31,9 +42,28 @@ struct wrapper {
 	unsigned short data_len;
 } __attribute__ ((packed));
 
+int parse_config(void *_pcfg, const char *section, const char *name, const char *value) {
+	config_t *pcfg = (config_t*)_pcfg;
+
+	if (!strcmp(name, "port")) {
+		pcfg->port = atoi(value);
+	} else if (!strcmp(name, "interface")) {
+		pcfg->if_name = strdup(value);
+	} else if (!strcmp(name, "router")) {
+		pcfg->ip = strdup(value);
+	} else if (!strcmp(name, "netmask")) {
+		pcfg->ip_netmask = strdup(value);
+	} else if (!strcmp(name, "debug")) {
+		pcfg->debug = value[0] == 't' ? 1 : 0;
+	} else {
+		return 0;
+	}
+	return 1;
+}
+
 int create_socket() {
 	int sock_fd = 0;
- 
+
 	if((sock_fd = socket(AF_INET, SOCK_DGRAM, 0))<0){
 		lprint("[erro] Cannot create socket\n");
 		return -1;
@@ -144,6 +174,7 @@ int fd_count(int fd, char *buf, int n) {
 void usage(char *name) {
 	fprintf(stderr, "Usage: %s [OPTIONS]\n", name);
 	fprintf(stderr, "Options\n");
+	fprintf(stderr, "  -f <file>       Read options from config file\n");
 	fprintf(stderr, "  -i <interface>  Use specific interface (Default: " DEF_IFNAME ")\n");
 	fprintf(stderr, "  -c <address>    Connect to remote VPN server (Enables client mode)\n");
 	fprintf(stderr, "  -p <port>       Bind to port or connect to port (Default: %u)\n", DEF_PORT);
@@ -154,37 +185,49 @@ void usage(char *name) {
 
 int main(int argc, char *argv[]) {
 	int flags = IFF_TUN;
-	char if_name[IFNAMSIZ] = DEF_IFNAME;
 	char remote_ip[16];
-	int tap_fd, sock_fd, net_fd, option, server = 1;
-	unsigned short int port = DEF_PORT;
+	char config_file[64];
+	int tap_fd, sock_fd, net_fd, option, server = 1, config = 0;
 	struct sockaddr_in local, remote;
-	unsigned char master_pk[crypto_box_PUBLICKEYBYTES];
-	unsigned char master_sk[crypto_box_SECRETKEYBYTES];
+	config_t cfg = {
+		.port = DEF_PORT,
+		.if_name = strdup(DEF_IFNAME),
+		.ip = strdup(DEF_ROUTER_ADDR),
+		.ip_netmask= strdup(DEF_NETMASK),
+		.debug = 0
+	};
 
+	/* Start log */
 	start_log();
 
+	/* Initialize NaCl */
+	sodium_init();
+
 	/* Check command line options */
-	while((option = getopt(argc, argv, "i:c:p:ahv"))>0){
-		switch(option) {
+	while ((option = getopt(argc, argv, "f:i:c:p:ahv"))>0){
+		switch (option) {
 			case 'v':
-				debug = 1;
+				cfg.debug = 1;
 				break;
 			case 'h':
 				usage(argv[0]);
 				return 1;
 			case 'i':
-				strncpy(if_name, optarg, IFNAMSIZ-1);
+				cfg.if_name = strdup(optarg);
 				break;
 			case 'c':
 				server = 0;
 				strncpy(remote_ip, optarg, 15);
 				break;
 			case 'p':
-				port = atoi(optarg);
+				cfg.port = atoi(optarg);
 				break;
 			case 'a':
 				flags = IFF_TAP;
+				break;
+			case 'f':
+				config = 1;
+				strncpy(config_file, optarg, 63);
 				break;
 			default:
 				fprintf(stderr, "Unknown option %c\n", option);
@@ -196,12 +239,52 @@ int main(int argc, char *argv[]) {
 	argv += optind;
 	argc -= optind;
 
-	/* Initialize NaCl */
-	sodium_init();
+	if (argc > 0) {
+		/* Generate new CA */
+		if (!strcmp(argv[0], "genca")) {
+			unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+			unsigned char sk[crypto_sign_SECRETKEYBYTES];
+			unsigned char cert[CERTSIZE];
+			unsigned char cert_signed[crypto_sign_BYTES + CERTSIZE];
+			unsigned char thumb[crypto_hash_sha256_BYTES];
+			unsigned long long cert_signed_len;
+
+			randombytes_buf(cert, CERTSIZE);
+			crypto_sign_keypair(pk, sk);
+			crypto_sign(cert_signed, &cert_signed_len, cert, CERTSIZE, sk);
+			crypto_hash_sha256(thumb, cert_signed, cert_signed_len);
+
+			puts("Generating CA");
+			printf("Algorithm: %s\n", crypto_sign_primitive());
+			printf("Private certificate: ");
+			print_hex(cert, CERTSIZE);
+			printf("Public key: ");
+			print_hex(pk, sizeof(pk));
+			printf("Private key: ");
+			print_hex(sk, sizeof(sk));
+			printf("Public certificate: ");
+			print_hex(cert_signed, cert_signed_len);
+			printf("Signature: ");
+			print_hex(thumb, crypto_hash_sha256_BYTES);
+
+			sodium_memzero(cert, sizeof(cert));
+			sodium_memzero(sk, sizeof(sk));
+			return 0;
+		}
+	}
+
+	/* Parse config */
+	if (config) {
+		lprint("[info] Loading config from file\n");
+		if (ini_parse(config_file, parse_config, &cfg) < 0) {
+			lprintf("[erro] Cannot open %s\n", config_file);
+			goto error;
+		}
+	}
 
 	/* Initialize tun/tap interface */
-	if ((tap_fd = set_tun(if_name, flags | IFF_NO_PI)) < 0 ) {
-		lprintf("[erro] Cannot connect to %s\n", if_name);
+	if ((tap_fd = set_tun(cfg.if_name, flags | IFF_NO_PI)) < 0 ) {
+		lprintf("[erro] Cannot connect to %s\n", cfg.if_name);
 		goto error;
 	}
 
@@ -210,13 +293,7 @@ int main(int argc, char *argv[]) {
 		goto error;
 	}
 
-	/* Generate keypar */
-	printf("Primitive %s\n", crypto_box_primitive());
-	crypto_box_keypair(master_pk, master_sk);
-	printf("Public master key: ");
-	print_hex(master_pk, sizeof(master_pk));
-
-	lprintf("[info] Protocol version %u\n", version);
+	lprintf("[info] Protocol version 0.%d\n", version);
 
 	/* Client or server mode */
 	if (!server) {
@@ -224,7 +301,7 @@ int main(int argc, char *argv[]) {
 		memset(&remote, 0, sizeof(remote));
 		remote.sin_family = AF_INET;
 		remote.sin_addr.s_addr = inet_addr(remote_ip);
-		remote.sin_port = htons(port);
+		remote.sin_port = htons(cfg.port);
 
 		/* Connection request */
 		if (connect(sock_fd, (struct sockaddr*)&remote, sizeof(remote))<0){
@@ -236,8 +313,8 @@ int main(int argc, char *argv[]) {
 		lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
 	} else {
 		/* Server, set local addr */
-		int sock = set_ip(if_name, "10.7.0.1");
-		set_netmask(sock, if_name, "255.255.255.0");
+		int sock = set_ip(cfg.if_name, cfg.ip);
+		set_netmask(sock, cfg.if_name, cfg.ip_netmask);
 
 		/* Avoid EADDRINUSE */
 		int _opval = 1;
@@ -249,9 +326,9 @@ int main(int argc, char *argv[]) {
 		memset(&local, 0, sizeof(local));
 		local.sin_family = AF_INET;
 		local.sin_addr.s_addr = htonl(INADDR_ANY);
-		local.sin_port = htons(port);
+		local.sin_port = htons(cfg.port);
 		if (bind(sock_fd, (struct sockaddr*)&local, sizeof(local)) < 0){
-			lprintf("[erro] Cannot bind to port %d\n", port);
+			lprintf("[erro] Cannot bind to port %d\n", cfg.port);
 			goto error;
 		}
 
@@ -334,7 +411,10 @@ int main(int argc, char *argv[]) {
 	}
 
 error:
-	sodium_memzero(master_pk, sizeof(master_pk));
+	free(cfg.if_name);
+	free(cfg.ip);
+	free(cfg.ip_netmask);
+
 	stop_log();
 
 	return 0;
