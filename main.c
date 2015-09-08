@@ -26,6 +26,8 @@
 #define DEF_ROUTER_ADDR		"10.7.0.1"
 #define DEF_NETMASK			"255.255.255.0"
 
+#define PACKET_MAGIC		0xdeadbaba
+
 const static unsigned char version[] = "CarbonVPN 0.7 - See Github";
 
 typedef struct {
@@ -36,10 +38,17 @@ typedef struct {
 	unsigned short debug;
 } config_t;
 
+enum mode {
+	HANDSHAKE = 1,
+	STREAM,
+	PING,
+};
+
 struct wrapper {
 	unsigned int client_id;
-	unsigned short version;
+	int packet_chk;
 	unsigned short data_len;
+	unsigned char mode;
 } __attribute__ ((packed));
 
 int parse_config(void *_pcfg, const char *section, const char *name, const char *value) {
@@ -194,7 +203,7 @@ int main(int argc, char *argv[]) {
 		.port = DEF_PORT,
 		.if_name = strdup(DEF_IFNAME),
 		.ip = strdup(DEF_ROUTER_ADDR),
-		.ip_netmask= strdup(DEF_NETMASK),
+		.ip_netmask = strdup(DEF_NETMASK),
 		.debug = 0
 	};
 
@@ -378,8 +387,9 @@ int main(int argc, char *argv[]) {
 			printf("Read %d bytes from tun\n", nread);
 
 			encap.client_id = htonl(1);
-			encap.version = htons(4457);
+			encap.packet_chk = htonl(PACKET_MAGIC);
 			encap.data_len = htons(nread);
+			encap.mode = STREAM;
 
 			/* Write packet */
 			nwrite = fd_write(net_fd, (char *)&encap, sizeof(encap));
@@ -395,17 +405,18 @@ int main(int argc, char *argv[]) {
 				close(net_fd);
 				continue;
 			}
-			printf("Client %d\n", swap16(encap.client_id));
-			printf("Version %d\n", swap32(encap.version));
-			printf("Len %d\n", swap32(encap.data_len));
 
-			printf("Read %d bytes from socket\n", nread);
+			if (ntohl(encap.packet_chk) == PACKET_MAGIC) {
+				printf("Read %d bytes from socket\n", nread);
 
-			/* Read packet */
-			nread = fd_count(net_fd, buffer, swap32(encap.data_len));
-			nwrite = fd_write(tap_fd, buffer, nread);
+				/* Read packet */
+				nread = fd_count(net_fd, buffer, ntohs(encap.data_len));
+				nwrite = fd_write(tap_fd, buffer, nread);
 
-			printf("Wrote %d bytes to tun\n", nwrite);
+				printf("Wrote %d bytes to tun\n", nwrite);
+			} else {
+				printf("Packet dropped\n");
+			}
 		}
 	}
 
