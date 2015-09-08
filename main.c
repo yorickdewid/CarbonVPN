@@ -39,10 +39,17 @@ typedef struct {
 } config_t;
 
 enum mode {
-	HANDSHAKE = 1,
+	CLIENT_HELLO = 1,
+	SERVER_HELLO,
 	STREAM,
 	PING,
 };
+
+struct handshake {
+	char pubkey[32];
+	char ip[16];
+	char netmask[16];
+} __attribute__ ((packed));
 
 struct wrapper {
 	unsigned int client_id;
@@ -122,7 +129,19 @@ int set_ip(char *ifname, char *ip_addr) {
 	if (ioctl(sock_fd, SIOCSIFADDR, &ifr)<0) {
 		lprint("[erro] Cannot set ip address\n");
 		return -1;
-	}            
+	}
+
+	/* Ensure the interface is up */
+	if (ioctl(sock_fd, SIOCGIFFLAGS, &ifr)<0) {
+		lprint("[erro] Cannot get interface\n");
+		return -1;
+	}
+
+	ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+	if (ioctl(sock_fd, SIOCSIFFLAGS, &ifr)<0) {
+		lprint("[erro] Cannot set interface\n");
+		return -1;
+	}
 
 	return sock_fd;
 }
@@ -319,6 +338,19 @@ int main(int argc, char *argv[]) {
 
 		net_fd = sock_fd;
 		lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
+
+		struct wrapper encap;
+		encap.client_id = htonl(1);
+		encap.packet_chk = htonl(PACKET_MAGIC);
+		encap.data_len = 0;
+		encap.mode = CLIENT_HELLO;
+
+		struct handshake client_key;
+		strncpy(client_key.pubkey, "28c15c0b405c1f7a107133edf5504367", 32);
+
+		fd_write(net_fd, (char *)&encap, sizeof(encap));
+		fd_write(net_fd, (char *)&client_key, sizeof(client_key));
+
 	} else {
 		/* Server, set local addr */
 		int sock = set_ip(cfg.if_name, cfg.ip);
@@ -409,11 +441,50 @@ int main(int argc, char *argv[]) {
 			if (ntohl(encap.packet_chk) == PACKET_MAGIC) {
 				printf("Read %d bytes from socket\n", nread);
 
-				/* Read packet */
-				nread = fd_count(net_fd, buffer, ntohs(encap.data_len));
-				nwrite = fd_write(tap_fd, buffer, nread);
+				printf("Mode %d\n", encap.mode);
+				if (encap.mode == CLIENT_HELLO) {
 
-				printf("Wrote %d bytes to tun\n", nwrite);
+					/* Read packet */
+					struct handshake client_key;
+					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
+					printf("Key %s\n", client_key.pubkey);
+
+					encap.client_id = htonl(1);
+					encap.packet_chk = htonl(PACKET_MAGIC);
+					encap.data_len = 0;
+					encap.mode = SERVER_HELLO;
+
+					strncpy(client_key.pubkey, "7546cef3b7b2c9de09f6974d75473bc6", 32);
+					strncpy(client_key.ip, "10.7.0.2", 15);
+					strncpy(client_key.netmask, cfg.ip_netmask, 15);
+
+					fd_write(net_fd, (char *)&encap, sizeof(encap));
+					fd_write(net_fd, (char *)&client_key, sizeof(client_key));
+
+					puts("Send back struct handshake");
+				} else if (encap.mode == SERVER_HELLO) {
+
+					/* Read packet */
+					struct handshake client_key;
+					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
+					printf("Key %s\n", client_key.pubkey);
+					printf("ip %s\n", client_key.ip);
+					printf("netmask %s\n", client_key.netmask);
+
+					int sock = set_ip(cfg.if_name, client_key.ip);
+					set_netmask(sock, cfg.if_name, client_key.netmask);
+				} else if (encap.mode == STREAM) {
+
+					/* Read packet */
+					nread = fd_count(net_fd, buffer, ntohs(encap.data_len));
+					nwrite = fd_write(tap_fd, buffer, nread);
+
+					printf("Wrote %d bytes to tun\n", nwrite);
+				} else if (encap.mode == PING) {
+					puts("Send back struct handshake");
+				} else {
+					printf("Packet dropped\n");
+				}
 			} else {
 				printf("Packet dropped\n");
 			}
