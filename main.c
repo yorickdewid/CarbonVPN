@@ -26,7 +26,7 @@
 #define DEF_ROUTER_ADDR		"10.7.0.1"
 #define DEF_NETMASK			"255.255.255.0"
 
-const static unsigned short version = 7;
+const static unsigned char version[] = "CarbonVPN 0.7 - See Github";
 
 typedef struct {
 	unsigned short port;
@@ -181,6 +181,7 @@ void usage(char *name) {
 	fprintf(stderr, "  -a              Use TAP interface (Default: TUN)\n");
 	fprintf(stderr, "  -v              Verbose output\n");
 	fprintf(stderr, "  -h              This help text\n");
+	fprintf(stderr, "\n%s\n", version);
 }
 
 int main(int argc, char *argv[]) {
@@ -276,7 +277,7 @@ int main(int argc, char *argv[]) {
 	/* Parse config */
 	if (config) {
 		lprint("[info] Loading config from file\n");
-		if (ini_parse(config_file, parse_config, &cfg) < 0) {
+		if (conf_parse(config_file, parse_config, &cfg) < 0) {
 			lprintf("[erro] Cannot open %s\n", config_file);
 			goto error;
 		}
@@ -292,8 +293,6 @@ int main(int argc, char *argv[]) {
 		lprint("[erro] Cannot create socket\n");
 		goto error;
 	}
-
-	lprintf("[info] Protocol version 0.%d\n", version);
 
 	/* Client or server mode */
 	if (!server) {
@@ -379,7 +378,7 @@ int main(int argc, char *argv[]) {
 			printf("Read %d bytes from tun\n", nread);
 
 			encap.client_id = htonl(1);
-			encap.version = htons(version);
+			encap.version = htons(4457);
 			encap.data_len = htons(nread);
 
 			/* Write packet */
