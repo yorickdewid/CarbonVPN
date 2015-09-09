@@ -26,7 +26,6 @@
 #define DEF_ROUTER_ADDR		"10.7.0.1"
 #define DEF_NETMASK			"255.255.255.0"
 #define DEF_MAX_CLIENTS		20
-
 #define PACKET_MAGIC		0xdeadbaba
 
 const static unsigned char version[] = "CarbonVPN 0.7 - See Github";
@@ -45,6 +44,7 @@ enum mode {
 	SERVER_HELLO,
 	STREAM,
 	PING,
+	PING_BACK,
 };
 
 struct handshake {
@@ -435,7 +435,7 @@ int main(int argc, char *argv[]) {
 		if(FD_ISSET(tap_fd, &rd_set)){
 			nread = fd_read(tap_fd, buffer, BUFSIZE);
 
-			printf("Read %d bytes from tun\n", nread);
+			if (cfg.debug) lprintf("[dbug] Read %d bytes from tun\n", nread);
 
 			encap.client_id = htonl(1);
 			encap.packet_chk = htonl(PACKET_MAGIC);
@@ -446,7 +446,7 @@ int main(int argc, char *argv[]) {
 			nwrite = fd_write(net_fd, (char *)&encap, sizeof(encap));
 			nwrite = fd_write(net_fd, buffer, nread);
 
-			printf("Wrote %d bytes to socket\n", nwrite);
+			if (cfg.debug) lprintf("[dbug] Wrote %d bytes to socket\n", nwrite);
 		}
 
 		/* Action on socket */
@@ -458,19 +458,19 @@ int main(int argc, char *argv[]) {
 			}
 
 			if (ntohl(encap.packet_chk) == PACKET_MAGIC) {
-				printf("Read %d bytes from socket\n", nread);
+				if (cfg.debug) lprintf("[dbug] Read %d bytes from socket\n", nread);
 
 				if (encap.mode == CLIENT_HELLO) {
-
 					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
-					printf("Key %s\n", client_key.pubkey);
 
 					encap.client_id = htonl(1);
 					encap.packet_chk = htonl(PACKET_MAGIC);
 					encap.data_len = 0;
 					encap.mode = SERVER_HELLO;
+
+					if (cfg.debug) lprintf("[dbug] Client %d Public key %s\n", 1, client_key.pubkey);
 
 					strncpy(client_key.pubkey, "7546cef3b7b2c9de09f6974d75473bc6", 32);
 					strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
@@ -478,31 +478,39 @@ int main(int argc, char *argv[]) {
 
 					fd_write(net_fd, (char *)&encap, sizeof(encap));
 					fd_write(net_fd, (char *)&client_key, sizeof(client_key));
-				} else if (encap.mode == SERVER_HELLO) {
 
+					lprintf("[info] Client %d assigned %s\n", 1, client_key.ip);
+				} else if (encap.mode == SERVER_HELLO) { /* TODO: This could already be encrypted */
 					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
-					printf("Key %s\n", client_key.pubkey);
-					printf("ip %s\n", client_key.ip);
-					printf("netmask %s\n", client_key.netmask);
 
 					int sock = set_ip(cfg.if_name, client_key.ip);
 					set_netmask(sock, cfg.if_name, client_key.netmask);
-				} else if (encap.mode == STREAM) {
 
+					lprintf("[info] Assgined %s/%s\n", client_key.ip, client_key.netmask);
+				} else if (encap.mode == STREAM) {
 					/* Read packet */
 					nread = fd_count(net_fd, buffer, ntohs(encap.data_len));
 					nwrite = fd_write(tap_fd, buffer, nread);
 
-					printf("Wrote %d bytes to tun\n", nwrite);
+					if (cfg.debug) lprintf("[dbug] Wrote %d bytes to tun\n", nwrite);
 				} else if (encap.mode == PING) {
-					puts("Send back struct handshake");
+					/* Ping back */
+					encap.client_id = htonl(1);
+					encap.packet_chk = htonl(PACKET_MAGIC);
+					encap.data_len = 0;
+					encap.mode = PING_BACK;
+
+					fd_write(net_fd, (char *)&encap, sizeof(encap));
+				} else if (encap.mode == PING_BACK) {
+					/* Ignore pingback */
+
 				} else {
-					printf("Packet dropped\n");
+					if (cfg.debug) lprintf("[dbug] Packet dropped\n");
 				}
 			} else {
-				printf("Packet dropped\n");
+				if (cfg.debug) lprintf("[dbug] Packet dropped\n");
 			}
 		}
 	}
