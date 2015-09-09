@@ -168,6 +168,20 @@ int set_netmask(int sock_fd, char *ifname, char *ip_addr_mask ) {
 	return sock_fd;
 }
 
+char *incr_ip(char *ip_addr, unsigned char increment) {
+	struct sockaddr_in sin;
+	static char ip[INET_ADDRSTRLEN];
+
+	inet_pton(AF_INET, ip_addr, &sin.sin_addr);
+
+	unsigned long nlenh = ntohl(sin.sin_addr.s_addr);
+	nlenh += increment;
+	sin.sin_addr.s_addr = htonl(nlenh);
+
+	inet_ntop(AF_INET, &sin.sin_addr, ip, INET6_ADDRSTRLEN);
+	return ip;
+}
+
 int fd_read(int fd, char *buf, int n){
 	int nread;
 
@@ -446,7 +460,6 @@ int main(int argc, char *argv[]) {
 			if (ntohl(encap.packet_chk) == PACKET_MAGIC) {
 				printf("Read %d bytes from socket\n", nread);
 
-				printf("Mode %d\n", encap.mode);
 				if (encap.mode == CLIENT_HELLO) {
 
 					/* Read packet */
@@ -460,13 +473,11 @@ int main(int argc, char *argv[]) {
 					encap.mode = SERVER_HELLO;
 
 					strncpy(client_key.pubkey, "7546cef3b7b2c9de09f6974d75473bc6", 32);
-					strncpy(client_key.ip, "10.7.0.2", 15);
+					strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
 					strncpy(client_key.netmask, cfg.ip_netmask, 15);
 
 					fd_write(net_fd, (char *)&encap, sizeof(encap));
 					fd_write(net_fd, (char *)&client_key, sizeof(client_key));
-
-					puts("Send back struct handshake");
 				} else if (encap.mode == SERVER_HELLO) {
 
 					/* Read packet */
