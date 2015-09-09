@@ -358,7 +358,16 @@ int main(int argc, char *argv[]) {
 		net_fd = sock_fd;
 		lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
 
+		/* Check if server is responding */
 		struct wrapper encap;
+		encap.client_id = htonl(1);
+		encap.packet_chk = htonl(PACKET_MAGIC);
+		encap.data_len = 0;
+		encap.mode = PING;
+
+		fd_write(net_fd, (char *)&encap, sizeof(encap));
+
+		/* Notify server */
 		encap.client_id = htonl(1);
 		encap.packet_chk = htonl(PACKET_MAGIC);
 		encap.data_len = 0;
@@ -369,7 +378,6 @@ int main(int argc, char *argv[]) {
 
 		fd_write(net_fd, (char *)&encap, sizeof(encap));
 		fd_write(net_fd, (char *)&client_key, sizeof(client_key));
-
 	} else {
 		/* Server, set local addr */
 		int sock = set_ip(cfg.if_name, cfg.ip);
@@ -504,8 +512,8 @@ int main(int argc, char *argv[]) {
 
 					fd_write(net_fd, (char *)&encap, sizeof(encap));
 				} else if (encap.mode == PING_BACK) {
-					/* Ignore pingback */
-
+					/* Log pingback */
+					lprintf("[info] Server pingback\n");
 				} else {
 					if (cfg.debug) lprintf("[dbug] Packet dropped\n");
 				}
