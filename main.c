@@ -20,7 +20,7 @@
 #include "util.h"
 
 #define BUFSIZE				2048
-#define CERTSIZE			128
+#define CERTSIZE			32
 #define DEF_PORT			5059
 #define DEF_IFNAME			"tun0"
 #define DEF_ROUTER_ADDR		"10.7.0.1"
@@ -218,7 +218,7 @@ int fd_count(int fd, char *buf, int n) {
 }
 
 void usage(char *name) {
-	fprintf(stderr, "Usage: %s [OPTIONS]\n", name);
+	fprintf(stderr, "Usage: %s [OPTIONS] [COMMANDS]\n", name);
 	fprintf(stderr, "Options\n");
 	fprintf(stderr, "  -f <file>       Read options from config file\n");
 	fprintf(stderr, "  -i <interface>  Use specific interface (Default: " DEF_IFNAME ")\n");
@@ -226,7 +226,9 @@ void usage(char *name) {
 	fprintf(stderr, "  -p <port>       Bind to port or connect to port (Default: %u)\n", DEF_PORT);
 	fprintf(stderr, "  -a              Use TAP interface (Default: TUN)\n");
 	fprintf(stderr, "  -v              Verbose output\n");
-	fprintf(stderr, "  -h              This help text\n");
+	fprintf(stderr, "  -h              This help text\n\n");
+	fprintf(stderr, "Commands\n");
+	fprintf(stderr, "  genca           Generate CA certificate\n");
 	fprintf(stderr, "\n%s\n", version);
 }
 
@@ -302,18 +304,27 @@ int main(int argc, char *argv[]) {
 			crypto_sign(cert_signed, &cert_signed_len, cert, CERTSIZE, sk);
 			crypto_hash_sha256(thumb, cert_signed, cert_signed_len);
 
-			puts("Generating CA");
-			printf("Algorithm: %s\n", crypto_sign_primitive());
-			printf("Private certificate: ");
-			print_hex(cert, CERTSIZE);
-			printf("Public key: ");
-			print_hex(pk, sizeof(pk));
-			printf("Private key: ");
-			print_hex(sk, sizeof(sk));
-			printf("Public certificate: ");
+			if (cfg.debug) {
+				printf("Generating CA with %s-%s-SHA256\n", randombytes_implementation_name(), crypto_sign_primitive());
+				printf("Private certificate: \t");
+				print_hex(cert, CERTSIZE);
+				printf("Public key: \t\t");
+				print_hex(pk, sizeof(pk));
+				printf("Private key: \t\t");
+				print_hex(sk, sizeof(sk));
+				printf("Public certificate: \t");
+				print_hex(cert_signed, cert_signed_len);
+				printf("Signature: \t\t");
+				print_hex(thumb, crypto_hash_sha256_BYTES);
+				putchar('\n');
+			}
+			puts("Add the following lines the config file:");
+			printf("cacert = ");
 			print_hex(cert_signed, cert_signed_len);
-			printf("Signature: ");
-			print_hex(thumb, crypto_hash_sha256_BYTES);
+			printf("publickey = ");
+			print_hex(pk, sizeof(pk));
+			printf("privatekey = ");
+			print_hex(sk, sizeof(sk));
 
 			sodium_memzero(cert, sizeof(cert));
 			sodium_memzero(sk, sizeof(sk));
