@@ -229,6 +229,7 @@ void usage(char *name) {
 	fprintf(stderr, "  -h              This help text\n\n");
 	fprintf(stderr, "Commands\n");
 	fprintf(stderr, "  genca           Generate CA certificate\n");
+	fprintf(stderr, "  cert            Create and sign certificate\n");
 	fprintf(stderr, "\n%s\n", version);
 }
 
@@ -318,6 +319,7 @@ int main(int argc, char *argv[]) {
 				print_hex(thumb, crypto_hash_sha256_BYTES);
 				putchar('\n');
 			}
+
 			puts("Add the following lines the config file:");
 			printf("cacert = ");
 			print_hex(cert_signed, cert_signed_len);
@@ -329,6 +331,22 @@ int main(int argc, char *argv[]) {
 			sodium_memzero(cert, sizeof(cert));
 			sodium_memzero(sk, sizeof(sk));
 			return 0;
+		} else if (!strcmp(argv[0], "cert")) {
+			unsigned char pk[crypto_box_PUBLICKEYBYTES];
+			unsigned char sk[crypto_box_SECRETKEYBYTES];
+			crypto_box_keypair(pk, sk);
+
+			if (cfg.debug) {
+				printf("Generating keypair with %s\n", crypto_box_primitive());
+				printf("Public key: \t\t");
+				print_hex(pk, sizeof(pk));
+				printf("Private key: \t\t");
+				print_hex(sk, sizeof(sk));
+			}
+			return 0;
+		} else {
+			fprintf(stderr, "Unknown command %s\n", argv[0]);
+			return 1;
 		}
 	}
 
