@@ -37,6 +37,9 @@ typedef struct {
 	char *ip_netmask;
 	unsigned char debug;
 	unsigned char max_conn;
+	unsigned char cacert[crypto_sign_BYTES + CERTSIZE];
+	unsigned char capk[crypto_sign_PUBLICKEYBYTES];
+	unsigned char cask[crypto_sign_SECRETKEYBYTES];
 } config_t;
 
 enum mode {
@@ -75,6 +78,12 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 		pcfg->debug = value[0] == 't' ? 1 : 0;
 	} else if (!strcmp(name, "max_clients")) {
 		pcfg->max_conn = atoi(value);
+	} else if (!strcmp(name, "cacert")) {
+		if (strlen(value) == (2*(crypto_sign_BYTES + CERTSIZE))) {
+			hextobin(pcfg->cacert, (unsigned char *)value, 2*(crypto_sign_BYTES + CERTSIZE));
+			printf("<%s>\n", value);
+			print_hex(pcfg->cacert, crypto_sign_BYTES + CERTSIZE);
+		}
 	} else {
 		return 0;
 	}
@@ -229,7 +238,7 @@ void usage(char *name) {
 	fprintf(stderr, "  -h              This help text\n\n");
 	fprintf(stderr, "Commands\n");
 	fprintf(stderr, "  genca           Generate CA certificate\n");
-	fprintf(stderr, "  cert            Create and sign certificate\n");
+	fprintf(stderr, "  gencert         Create and sign certificate\n");
 	fprintf(stderr, "\n%s\n", version);
 }
 
@@ -297,26 +306,26 @@ int main(int argc, char *argv[]) {
 			unsigned char sk[crypto_sign_SECRETKEYBYTES];
 			unsigned char cert[CERTSIZE];
 			unsigned char cert_signed[crypto_sign_BYTES + CERTSIZE];
-			unsigned char thumb[crypto_hash_sha256_BYTES];
+			unsigned char fp[crypto_generichash_BYTES];
 			unsigned long long cert_signed_len;
 
 			randombytes_buf(cert, CERTSIZE);
 			crypto_sign_keypair(pk, sk);
 			crypto_sign(cert_signed, &cert_signed_len, cert, CERTSIZE, sk);
-			crypto_hash_sha256(thumb, cert_signed, cert_signed_len);
+			crypto_generichash(fp, crypto_generichash_BYTES, cert_signed, cert_signed_len, pk, crypto_sign_PUBLICKEYBYTES);
 
 			if (cfg.debug) {
 				printf("Generating CA with %s-%s-SHA256\n", randombytes_implementation_name(), crypto_sign_primitive());
 				printf("Private certificate: \t");
 				print_hex(cert, CERTSIZE);
 				printf("Public key: \t\t");
-				print_hex(pk, sizeof(pk));
+				print_hex(pk, crypto_sign_PUBLICKEYBYTES);
 				printf("Private key: \t\t");
-				print_hex(sk, sizeof(sk));
+				print_hex(sk, crypto_sign_SECRETKEYBYTES);
 				printf("Public certificate: \t");
 				print_hex(cert_signed, cert_signed_len);
-				printf("Signature: \t\t");
-				print_hex(thumb, crypto_hash_sha256_BYTES);
+				printf("Fingerprint: \t\t");
+				print_hex(fp, crypto_generichash_BYTES);
 				putchar('\n');
 			}
 
@@ -324,17 +333,20 @@ int main(int argc, char *argv[]) {
 			printf("cacert = ");
 			print_hex(cert_signed, cert_signed_len);
 			printf("publickey = ");
-			print_hex(pk, sizeof(pk));
+			print_hex(pk, crypto_sign_PUBLICKEYBYTES);
 			printf("privatekey = ");
-			print_hex(sk, sizeof(sk));
+			print_hex(sk, crypto_sign_SECRETKEYBYTES);
 
 			sodium_memzero(cert, sizeof(cert));
 			sodium_memzero(sk, sizeof(sk));
 			return 0;
-		} else if (!strcmp(argv[0], "cert")) {
+		} else if (!strcmp(argv[0], "gencert")) {
 			unsigned char pk[crypto_box_PUBLICKEYBYTES];
 			unsigned char sk[crypto_box_SECRETKEYBYTES];
+			//unsigned char pk_sgined[crypto_box_PUBLICKEYBYTES + crypto_hash_sha256_BYTES]
 			crypto_box_keypair(pk, sk);
+			//strncpy(pk_sgined, pk, crypto_box_PUBLICKEYBYTES);
+			//strncat(pk_sgined)
 
 			if (cfg.debug) {
 				printf("Generating keypair with %s\n", crypto_box_primitive());
@@ -342,6 +354,14 @@ int main(int argc, char *argv[]) {
 				print_hex(pk, sizeof(pk));
 				printf("Private key: \t\t");
 				print_hex(sk, sizeof(sk));
+
+
+				unsigned char test[] = "a66f56cacac71514d5cc8d5780e2cdc98509e746296479e6fb048f34a301413f";
+				unsigned char out[crypto_box_SECRETKEYBYTES];
+				hextobin(out, test, crypto_box_SECRETKEYBYTES*2);
+				print_hex(out, sizeof(out));
+				//printf("%x\n", out);
+
 			}
 			return 0;
 		} else {

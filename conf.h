@@ -15,7 +15,7 @@ int conf_parse_stream(conf_reader reader, void *stream, conf_handler handler, vo
 
 /* Maximum line length for any line in config file. */
 #ifndef CONF_MAX_LINE
-#define CONF_MAX_LINE 200
+#define CONF_MAX_LINE 300
 #endif
 
 #endif // CONF_H
