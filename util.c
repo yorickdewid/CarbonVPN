@@ -10,12 +10,23 @@ void print_hex(unsigned char *s, size_t n) {
 	printf("\n");
 }
 
-void hextobin(unsigned char *v, unsigned char *s, size_t n) {
+/*void hextobin(unsigned char *v, unsigned char *s, size_t n) {
 	int i;
 	unsigned char *p = s;
 	for (i=0; i<n; ++i) {
 		sscanf((char *)p, "%2hhx", &v[i]);
-		p += 2 * sizeof(char);
+		p += 2;
+	}
+}*/
+void hextobin(unsigned char *v, unsigned char *s, size_t n) {
+	int i;
+	char _t[3];
+	unsigned char *p = s;
+	for (i=0; i<n; ++i) {
+		memcpy(_t, p, 2);
+		_t[2] = '\0';
+		v[i] = (int)strtol(_t, NULL, 16);
+		p += 2;
 	}
 }
 
