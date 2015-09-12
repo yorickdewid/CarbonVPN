@@ -28,7 +28,7 @@
 #define DEF_MAX_CLIENTS		20
 #define PACKET_MAGIC		0xdeadbaba
 
-const static unsigned char version[] = "CarbonVPN 0.7 - See Github";
+const static unsigned char version[] = "CarbonVPN 0.8 - See Github";
 
 typedef struct {
 	unsigned short port;
@@ -40,6 +40,8 @@ typedef struct {
 	unsigned char cacert[crypto_sign_BYTES + CERTSIZE];
 	unsigned char capk[crypto_sign_PUBLICKEYBYTES];
 	unsigned char cask[crypto_sign_SECRETKEYBYTES];
+	unsigned char pk[crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
+	unsigned char sk[crypto_box_SECRETKEYBYTES];
 } config_t;
 
 enum mode {
@@ -89,6 +91,14 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 	} else if (!strcmp(name, "caprivatekey")) {
 		if (strlen(value) == (2*crypto_sign_SECRETKEYBYTES)) {
 			hextobin(pcfg->cask, (unsigned char *)value, 2*crypto_sign_SECRETKEYBYTES);
+		}
+	} else if (!strcmp(name, "publickey")) {
+		if (strlen(value) == (2*(crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES))) {
+			hextobin(pcfg->pk, (unsigned char *)value, 2*(crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES));
+		}
+	} else if (!strcmp(name, "privatekey")) {
+		if (strlen(value) == (2*crypto_box_SECRETKEYBYTES)) {
+			hextobin(pcfg->sk, (unsigned char *)value, 2*crypto_box_SECRETKEYBYTES);
 		}
 	} else {
 		return 0;
@@ -315,8 +325,8 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (argc > 0) {
-		/* Generate new CA */
 		if (!strcmp(argv[0], "genca")) {
+			/* Generate new CA */
 			unsigned char pk[crypto_sign_PUBLICKEYBYTES];
 			unsigned char sk[crypto_sign_SECRETKEYBYTES];
 			unsigned char cert[CERTSIZE];
@@ -356,14 +366,23 @@ int main(int argc, char *argv[]) {
 			sodium_memzero(sk, sizeof(sk));
 			return 0;
 		} else if (!strcmp(argv[0], "gencert")) {
+			/* Generate new client keypair */
 			unsigned char pk[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 			unsigned char sk[crypto_box_SECRETKEYBYTES];
 			unsigned char fp[crypto_generichash_BYTES];
 			unsigned char pk_signed[crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 			unsigned long long pk_signed_len;
+			char q;
+
 			crypto_generichash(fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 			crypto_box_keypair(pk, sk);
 			strncat((char *)pk, (char *)fp, crypto_generichash_BYTES);
+
+			printf("Sign key with CA [y/N]? ");
+			scanf("%c", &q);
+			if (q != 'Y' && q != 'y')
+				return 1;
+
 			crypto_sign(pk_signed, &pk_signed_len, pk, crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.cask);
 
 			if (cfg.debug) {
