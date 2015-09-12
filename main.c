@@ -53,7 +53,7 @@ enum mode {
 };
 
 struct handshake {
-	char pubkey[32];
+	char pubkey[crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 	char ip[16];
 	char netmask[16];
 } __attribute__ ((packed));
@@ -82,23 +82,23 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 		pcfg->max_conn = atoi(value);
 	} else if (!strcmp(name, "cacert")) {
 		if (strlen(value) == (2*(crypto_sign_BYTES + CERTSIZE))) {
-			hextobin(pcfg->cacert, (unsigned char *)value, 2*(crypto_sign_BYTES + CERTSIZE));
+			hextobin(pcfg->cacert, (unsigned char *)value, crypto_sign_BYTES + CERTSIZE);
 		}
 	} else if (!strcmp(name, "capublickey")) {
 		if (strlen(value) == (2*crypto_sign_PUBLICKEYBYTES)) {
-			hextobin(pcfg->capk, (unsigned char *)value, 2*crypto_sign_PUBLICKEYBYTES);
+			hextobin(pcfg->capk, (unsigned char *)value, crypto_sign_PUBLICKEYBYTES);
 		}
 	} else if (!strcmp(name, "caprivatekey")) {
 		if (strlen(value) == (2*crypto_sign_SECRETKEYBYTES)) {
-			hextobin(pcfg->cask, (unsigned char *)value, 2*crypto_sign_SECRETKEYBYTES);
+			hextobin(pcfg->cask, (unsigned char *)value, crypto_sign_SECRETKEYBYTES);
 		}
 	} else if (!strcmp(name, "publickey")) {
 		if (strlen(value) == (2*(crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES))) {
-			hextobin(pcfg->pk, (unsigned char *)value, 2*(crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES));
+			hextobin(pcfg->pk, (unsigned char *)value, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 		}
 	} else if (!strcmp(name, "privatekey")) {
 		if (strlen(value) == (2*crypto_box_SECRETKEYBYTES)) {
-			hextobin(pcfg->sk, (unsigned char *)value, 2*crypto_box_SECRETKEYBYTES);
+			hextobin(pcfg->sk, (unsigned char *)value, crypto_box_SECRETKEYBYTES);
 		}
 	} else {
 		return 0;
@@ -456,7 +456,7 @@ int main(int argc, char *argv[]) {
 		encap.mode = CLIENT_HELLO;
 
 		struct handshake client_key;
-		strncpy(client_key.pubkey, "28c15c0b405c1f7a107133edf5504367", 32);
+		memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
 		fd_write(net_fd, (char *)&encap, sizeof(encap));
 		fd_write(net_fd, (char *)&client_key, sizeof(client_key));
@@ -554,6 +554,8 @@ int main(int argc, char *argv[]) {
 					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
+					printf("Client key: ");
+					print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
 					encap.client_id = htonl(1);
 					encap.packet_chk = htonl(PACKET_MAGIC);
@@ -562,7 +564,7 @@ int main(int argc, char *argv[]) {
 
 					if (cfg.debug) lprintf("[dbug] Client %d Public key %s\n", 1, client_key.pubkey);
 
-					strncpy(client_key.pubkey, "7546cef3b7b2c9de09f6974d75473bc6", 32);
+					memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 					strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
 					strncpy(client_key.netmask, cfg.ip_netmask, 15);
 
@@ -574,6 +576,8 @@ int main(int argc, char *argv[]) {
 					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
+					printf("Server key: ");
+					print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
 					int sock = set_ip(cfg.if_name, client_key.ip);
 					set_netmask(sock, cfg.if_name, client_key.netmask);
