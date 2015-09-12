@@ -147,11 +147,12 @@ int set_ip(char *ifname, char *ip_addr) {
 	struct sockaddr_in sin;
 	int sock_fd = create_socket();
 
+	memset(&ifr, 0, sizeof(ifr));
 	sin.sin_family = AF_INET;
 
 	inet_pton(AF_INET, ip_addr, &sin.sin_addr);
 
-	strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
 	memcpy(&ifr.ifr_addr, &sin, sizeof(struct sockaddr)); 
 
 	/* Set interface address */
