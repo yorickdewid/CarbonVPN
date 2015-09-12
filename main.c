@@ -81,8 +81,14 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 	} else if (!strcmp(name, "cacert")) {
 		if (strlen(value) == (2*(crypto_sign_BYTES + CERTSIZE))) {
 			hextobin(pcfg->cacert, (unsigned char *)value, 2*(crypto_sign_BYTES + CERTSIZE));
-			printf("<%s>\n", value);
-			print_hex(pcfg->cacert, crypto_sign_BYTES + CERTSIZE);
+		}
+	} else if (!strcmp(name, "capublickey")) {
+		if (strlen(value) == (2*crypto_sign_PUBLICKEYBYTES)) {
+			hextobin(pcfg->capk, (unsigned char *)value, 2*crypto_sign_PUBLICKEYBYTES);
+		}
+	} else if (!strcmp(name, "caprivatekey")) {
+		if (strlen(value) == (2*crypto_sign_SECRETKEYBYTES)) {
+			hextobin(pcfg->cask, (unsigned char *)value, 2*crypto_sign_SECRETKEYBYTES);
 		}
 	} else {
 		return 0;
@@ -299,6 +305,15 @@ int main(int argc, char *argv[]) {
 	argv += optind;
 	argc -= optind;
 
+	/* Parse config */
+	if (config) {
+		lprint("[info] Loading config from file\n");
+		if (conf_parse(config_file, parse_config, &cfg) < 0) {
+			lprintf("[erro] Cannot open %s\n", config_file);
+			goto error;
+		}
+	}
+
 	if (argc > 0) {
 		/* Generate new CA */
 		if (!strcmp(argv[0], "genca")) {
@@ -332,50 +347,49 @@ int main(int argc, char *argv[]) {
 			puts("Add the following lines the config file:");
 			printf("cacert = ");
 			print_hex(cert_signed, cert_signed_len);
-			printf("publickey = ");
+			printf("capublickey = ");
 			print_hex(pk, crypto_sign_PUBLICKEYBYTES);
-			printf("privatekey = ");
+			printf("caprivatekey = ");
 			print_hex(sk, crypto_sign_SECRETKEYBYTES);
 
 			sodium_memzero(cert, sizeof(cert));
 			sodium_memzero(sk, sizeof(sk));
 			return 0;
 		} else if (!strcmp(argv[0], "gencert")) {
-			unsigned char pk[crypto_box_PUBLICKEYBYTES];
+			unsigned char pk[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 			unsigned char sk[crypto_box_SECRETKEYBYTES];
-			//unsigned char pk_sgined[crypto_box_PUBLICKEYBYTES + crypto_hash_sha256_BYTES]
+			unsigned char fp[crypto_generichash_BYTES];
+			unsigned char pk_signed[crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
+			unsigned long long pk_signed_len;
+			crypto_generichash(fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 			crypto_box_keypair(pk, sk);
-			//strncpy(pk_sgined, pk, crypto_box_PUBLICKEYBYTES);
-			//strncat(pk_sgined)
+			strncat((char *)pk, (char *)fp, crypto_generichash_BYTES);
+			crypto_sign(pk_signed, &pk_signed_len, pk, crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.cask);
 
 			if (cfg.debug) {
 				printf("Generating keypair with %s\n", crypto_box_primitive());
-				printf("Public key: \t\t");
-				print_hex(pk, sizeof(pk));
+				printf("Appended public key: \t");
+				print_hex(pk, crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 				printf("Private key: \t\t");
-				print_hex(sk, sizeof(sk));
-
-
-				unsigned char test[] = "a66f56cacac71514d5cc8d5780e2cdc98509e746296479e6fb048f34a301413f";
-				unsigned char out[crypto_box_SECRETKEYBYTES];
-				hextobin(out, test, crypto_box_SECRETKEYBYTES*2);
-				print_hex(out, sizeof(out));
-				//printf("%x\n", out);
-
+				print_hex(sk, crypto_box_SECRETKEYBYTES);
+				printf("Fingerprint: \t\t");
+				print_hex(fp, crypto_generichash_BYTES);
+				printf("Signed public key: \t");
+				print_hex(pk_signed, pk_signed_len);
+				putchar('\n');
 			}
+
+			puts("Add the following lines the config file:");
+			printf("publickey = ");
+			print_hex(pk_signed, pk_signed_len);
+			printf("privatekey = ");
+			print_hex(sk, crypto_box_SECRETKEYBYTES);
+
+			sodium_memzero(sk, sizeof(sk));
 			return 0;
 		} else {
 			fprintf(stderr, "Unknown command %s\n", argv[0]);
 			return 1;
-		}
-	}
-
-	/* Parse config */
-	if (config) {
-		lprint("[info] Loading config from file\n");
-		if (conf_parse(config_file, parse_config, &cfg) < 0) {
-			lprintf("[erro] Cannot open %s\n", config_file);
-			goto error;
 		}
 	}
 
