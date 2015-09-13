@@ -72,10 +72,13 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 	if (!strcmp(name, "port")) {
 		pcfg->port = atoi(value);
 	} else if (!strcmp(name, "interface")) {
+		free(pcfg->if_name);
 		pcfg->if_name = strdup(value);
 	} else if (!strcmp(name, "router")) {
+		free(pcfg->ip);
 		pcfg->ip = strdup(value);
 	} else if (!strcmp(name, "netmask")) {
+		free(pcfg->ip_netmask);
 		pcfg->ip_netmask = strdup(value);
 	} else if (!strcmp(name, "debug")) {
 		pcfg->debug = value[0] == 't' ? 1 : 0;
@@ -291,6 +294,7 @@ int main(int argc, char *argv[]) {
 				usage(argv[0]);
 				return 1;
 			case 'i':
+				free(cfg.if_name);
 				cfg.if_name = strdup(optarg);
 				break;
 			case 'c':
