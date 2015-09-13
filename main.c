@@ -63,6 +63,7 @@ struct wrapper {
 	int packet_chk;
 	unsigned short data_len;
 	unsigned char mode;
+	unsigned char nonce[crypto_box_NONCEBYTES];
 } __attribute__ ((packed));
 
 int parse_config(void *_pcfg, const char *section, const char *name, const char *value) {
@@ -503,9 +504,12 @@ int main(int argc, char *argv[]) {
 	int maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
 	while(1) {
 		char buffer[BUFSIZE];
+		unsigned char cbuffer[crypto_box_MACBYTES + BUFSIZE];
 		unsigned short nread, nwrite;
 		fd_set rd_set;
 		struct wrapper encap;
+		unsigned char ppk[crypto_box_PUBLICKEYBYTES];
+		unsigned char sshk[crypto_box_BEFORENMBYTES];
 
 		FD_ZERO(&rd_set);
 		FD_SET(tap_fd, &rd_set);
@@ -519,6 +523,7 @@ int main(int argc, char *argv[]) {
 
 		if (ret < 0) {
 			lprint("[warn] No devices in list\n");
+			sodium_memzero(sshk, sizeof(sshk));
 			goto error;
 		}
 
@@ -528,14 +533,19 @@ int main(int argc, char *argv[]) {
 
 			if (cfg.debug) lprintf("[dbug] Read %d bytes from tun\n", nread);
 
+			unsigned char nonce[crypto_box_NONCEBYTES];
+			randombytes_buf(nonce, crypto_box_NONCEBYTES);
+			crypto_box_easy_afternm(cbuffer, (const unsigned char *)buffer, nread, nonce, sshk);
+
 			encap.client_id = htonl(1);
 			encap.packet_chk = htonl(PACKET_MAGIC);
-			encap.data_len = htons(nread);
+			encap.data_len = htons(crypto_box_MACBYTES + nread);
 			encap.mode = STREAM;
+			strncpy((char *)encap.nonce, (const char *)nonce, crypto_box_NONCEBYTES);
 
 			/* Write packet */
 			nwrite = fd_write(net_fd, (char *)&encap, sizeof(encap));
-			nwrite = fd_write(net_fd, buffer, nread);
+			nwrite = fd_write(net_fd, (char *)cbuffer, crypto_box_MACBYTES + nread);
 
 			if (cfg.debug) lprintf("[dbug] Wrote %d bytes to socket\n", nwrite);
 		}
@@ -555,8 +565,6 @@ int main(int argc, char *argv[]) {
 					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
-printf("Client key: ");
-print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
 					unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 					unsigned long long pk_unsigned_len;
@@ -565,16 +573,17 @@ print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUB
 					} else {
 						lprintf("[info] Client authentication verified\n");
 					
-						unsigned char client_pk[crypto_box_PUBLICKEYBYTES];
 						unsigned char ca_fp[crypto_generichash_BYTES];
 						unsigned char cl_fp[crypto_generichash_BYTES];
-						memcpy(client_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+						memcpy(ppk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
 						memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
 
 						crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 
 						if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
 							lprintf("[info] Client signature verified\n");
+
+							crypto_box_beforenm(sshk, ppk, cfg.sk);
 
 							encap.client_id = htonl(1);
 							encap.packet_chk = htonl(PACKET_MAGIC);
@@ -593,12 +602,10 @@ print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUB
 							lprintf("[erro] Client signature mismatch\n");
 						}
 					}
-				} else if (encap.mode == SERVER_HELLO) { /* TODO: This could already be encrypted */
+				} else if (encap.mode == SERVER_HELLO) {
 					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
-printf("Server key: ");
-print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
 					unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 					unsigned long long pk_unsigned_len;
@@ -607,16 +614,17 @@ print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUB
 					} else {
 						lprintf("[info] Server authentication verified\n");
 					
-						unsigned char client_pk[crypto_box_PUBLICKEYBYTES];
 						unsigned char ca_fp[crypto_generichash_BYTES];
 						unsigned char cl_fp[crypto_generichash_BYTES];
-						memcpy(client_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+						memcpy(ppk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
 						memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
 
 						crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 
 						if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
 							lprintf("[info] Server signature verified\n");
+
+							crypto_box_beforenm(sshk, ppk, cfg.sk);
 
 							int sock = set_ip(cfg.if_name, client_key.ip);
 							set_netmask(sock, cfg.if_name, client_key.netmask);
@@ -628,10 +636,15 @@ print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUB
 					}
 				} else if (encap.mode == STREAM) {
 					/* Read packet */
-					nread = fd_count(net_fd, buffer, ntohs(encap.data_len));
-					nwrite = fd_write(tap_fd, buffer, nread);
+					nread = fd_count(net_fd, (char *)cbuffer, ntohs(encap.data_len));
 
-					if (cfg.debug) lprintf("[dbug] Wrote %d bytes to tun\n", nwrite);
+					if (crypto_box_open_easy_afternm((unsigned char *)buffer, cbuffer, ntohs(encap.data_len), encap.nonce, sshk) != 0) {
+						if (cfg.debug) lprintf("[dbug] Unable to decrypt packet\n");
+					} else {
+						nwrite = fd_write(tap_fd, buffer, nread);
+
+						if (cfg.debug) lprintf("[dbug] Wrote %d bytes to tun\n", nwrite);
+					}
 				} else if (encap.mode == PING) {
 					/* Ping back */
 					encap.client_id = htonl(1);
