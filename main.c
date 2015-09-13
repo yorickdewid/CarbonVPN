@@ -555,35 +555,77 @@ int main(int argc, char *argv[]) {
 					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
-					printf("Client key: ");
-					print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
+printf("Client key: ");
+print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
-					encap.client_id = htonl(1);
-					encap.packet_chk = htonl(PACKET_MAGIC);
-					encap.data_len = 0;
-					encap.mode = SERVER_HELLO;
+					unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
+					unsigned long long pk_unsigned_len;
+					if (crypto_sign_open(pk_unsigned, &pk_unsigned_len, (const unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.capk) != 0) {
+						lprintf("[erro] Client authentication mismatch\n");
+					} else {
+						lprintf("[info] Client authentication verified\n");
+					
+						unsigned char client_pk[crypto_box_PUBLICKEYBYTES];
+						unsigned char ca_fp[crypto_generichash_BYTES];
+						unsigned char cl_fp[crypto_generichash_BYTES];
+						memcpy(client_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+						memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
 
-					if (cfg.debug) lprintf("[dbug] Client %d Public key %s\n", 1, client_key.pubkey);
+						crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 
-					memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
-					strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
-					strncpy(client_key.netmask, cfg.ip_netmask, 15);
+						if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
+							lprintf("[info] Client signature verified\n");
 
-					fd_write(net_fd, (char *)&encap, sizeof(encap));
-					fd_write(net_fd, (char *)&client_key, sizeof(client_key));
+							encap.client_id = htonl(1);
+							encap.packet_chk = htonl(PACKET_MAGIC);
+							encap.data_len = 0;
+							encap.mode = SERVER_HELLO;
 
-					lprintf("[info] Client %d assigned %s\n", 1, client_key.ip);
+							memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
+							strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
+							strncpy(client_key.netmask, cfg.ip_netmask, 15);
+
+							fd_write(net_fd, (char *)&encap, sizeof(encap));
+							fd_write(net_fd, (char *)&client_key, sizeof(client_key));
+
+							lprintf("[info] Client %d assigned %s\n", 1, client_key.ip);
+						} else {
+							lprintf("[erro] Client signature mismatch\n");
+						}
+					}
 				} else if (encap.mode == SERVER_HELLO) { /* TODO: This could already be encrypted */
 					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
-					printf("Server key: ");
-					print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
+printf("Server key: ");
+print_hex((unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
-					int sock = set_ip(cfg.if_name, client_key.ip);
-					set_netmask(sock, cfg.if_name, client_key.netmask);
+					unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
+					unsigned long long pk_unsigned_len;
+					if (crypto_sign_open(pk_unsigned, &pk_unsigned_len, (const unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.capk) != 0) {
+						lprintf("[erro] Server authentication mismatch\n");
+					} else {
+						lprintf("[info] Server authentication verified\n");
+					
+						unsigned char client_pk[crypto_box_PUBLICKEYBYTES];
+						unsigned char ca_fp[crypto_generichash_BYTES];
+						unsigned char cl_fp[crypto_generichash_BYTES];
+						memcpy(client_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+						memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
 
-					lprintf("[info] Assgined %s/%s\n", client_key.ip, client_key.netmask);
+						crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
+
+						if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
+							lprintf("[info] Server signature verified\n");
+
+							int sock = set_ip(cfg.if_name, client_key.ip);
+							set_netmask(sock, cfg.if_name, client_key.netmask);
+
+							lprintf("[info] Assgined %s/%s\n", client_key.ip, client_key.netmask);
+						} else {
+							lprintf("[erro] Server signature mismatch\n");
+						}
+					}
 				} else if (encap.mode == STREAM) {
 					/* Read packet */
 					nread = fd_count(net_fd, buffer, ntohs(encap.data_len));
