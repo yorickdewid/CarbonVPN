@@ -269,14 +269,15 @@ int main(int argc, char *argv[]) {
 	char config_file[64];
 	int tap_fd, sock_fd, net_fd, option, server = 1, config = 0;
 	struct sockaddr_in local, remote;
-	config_t cfg = {
-		.port = DEF_PORT,
-		.if_name = strdup(DEF_IFNAME),
-		.ip = strdup(DEF_ROUTER_ADDR),
-		.ip_netmask = strdup(DEF_NETMASK),
-		.debug = 0,
-		.max_conn = DEF_MAX_CLIENTS
-	};
+	config_t cfg;
+
+	memset(&cfg, 0, sizeof(config_t));
+	cfg.port = DEF_PORT;
+	cfg.if_name = strdup(DEF_IFNAME);
+	cfg.ip = strdup(DEF_ROUTER_ADDR);
+	cfg.ip_netmask = strdup(DEF_NETMASK);
+	cfg.debug = 0;
+	cfg.max_conn = DEF_MAX_CLIENTS;
 
 	/* Start log */
 	start_log();
@@ -380,6 +381,21 @@ int main(int argc, char *argv[]) {
 			unsigned long long pk_signed_len;
 			char q;
 
+			if (isnull(cfg.cacert, crypto_sign_BYTES + CERTSIZE)) {
+				lprintf("[erro] No CA certificate in config, see genca\n");
+				return 1;
+			}
+
+			if (isnull(cfg.capk, crypto_sign_PUBLICKEYBYTES)) {
+				lprintf("[erro] No CA public key in config, see genca\n");
+				return 1;
+			}
+
+			if (isnull(cfg.cask, crypto_sign_SECRETKEYBYTES)) {
+				lprintf("[erro] No CA private key in config, see genca\n");
+				return 1;
+			}
+
 			crypto_generichash(fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 			crypto_box_keypair(pk, sk);
 			strncat((char *)pk, (char *)fp, crypto_generichash_BYTES); //TODO: memset with offset
@@ -416,6 +432,26 @@ int main(int argc, char *argv[]) {
 			fprintf(stderr, "Unknown command %s\n", argv[0]);
 			return 1;
 		}
+	}
+
+	if (isnull(cfg.cacert, crypto_sign_BYTES + CERTSIZE)) {
+		lprintf("[erro] No CA certificate in config, see genca\n");
+		goto error;
+	}
+
+	if (isnull(cfg.capk, crypto_sign_PUBLICKEYBYTES)) {
+		lprintf("[erro] No CA public key in config, see genca\n");
+		goto error;
+	}
+
+	if (isnull(cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES)) {
+		lprintf("[erro] No client public key in config, see gencert\n");
+		goto error;
+	}
+
+	if (isnull(cfg.sk, crypto_box_SECRETKEYBYTES)) {
+		lprintf("[erro] No client private key in config, see gencert\n");
+		goto error;
 	}
 
 	/* Initialize tun/tap interface */

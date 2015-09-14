@@ -29,3 +29,11 @@ char *strdup(const char *str) {
 		strcpy(dup, str);
 	return dup;
 }
+
+int isnull(unsigned char *s, size_t n) {
+	int i, j = 0;
+	for (i=0; i<n; ++i)
+		if (!s[i])
+			j++;
+	return (j == n) ? 1 : 0;
+}
