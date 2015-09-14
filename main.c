@@ -212,7 +212,7 @@ char *incr_ip(char *ip_addr, unsigned char increment) {
 	return ip;
 }
 
-int fd_read(int fd, char *buf, int n){
+int fd_read(int fd, unsigned char *buf, int n){
 	int nread;
 
 	if((nread = read(fd, buf, n))<0){
@@ -222,7 +222,7 @@ int fd_read(int fd, char *buf, int n){
 	return nread;
 }
 
-int fd_write(int fd, char *buf, int n){
+int fd_write(int fd, unsigned char *buf, int n){
 	int nwrite;
 
 	if((nwrite = write(fd, buf, n))<0){
@@ -232,7 +232,7 @@ int fd_write(int fd, char *buf, int n){
 	return nwrite;
 }
 
-int fd_count(int fd, char *buf, int n) {
+int fd_count(int fd, unsigned char *buf, int n) {
 	int nread, left = n;
 
 	/* Read until buffer is 0 */
@@ -382,7 +382,7 @@ int main(int argc, char *argv[]) {
 
 			crypto_generichash(fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 			crypto_box_keypair(pk, sk);
-			strncat((char *)pk, (char *)fp, crypto_generichash_BYTES);
+			strncat((char *)pk, (char *)fp, crypto_generichash_BYTES); //TODO: memset with offset
 
 			printf("Sign key with CA [y/N]? ");
 			scanf("%c", &q);
@@ -453,7 +453,7 @@ int main(int argc, char *argv[]) {
 		encap.data_len = 0;
 		encap.mode = PING;
 
-		fd_write(net_fd, (char *)&encap, sizeof(encap));
+		fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
 
 		/* Notify server */
 		encap.client_id = htonl(1);
@@ -464,8 +464,8 @@ int main(int argc, char *argv[]) {
 		struct handshake client_key;
 		memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
-		fd_write(net_fd, (char *)&encap, sizeof(encap));
-		fd_write(net_fd, (char *)&client_key, sizeof(client_key));
+		fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
+		fd_write(net_fd, (unsigned char *)&client_key, sizeof(client_key));
 	} else {
 		/* Server, set local addr */
 		int sock = set_ip(cfg.if_name, cfg.ip);
@@ -507,7 +507,7 @@ int main(int argc, char *argv[]) {
 
 	int maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
 	while(1) {
-		char buffer[BUFSIZE];
+		unsigned char buffer[BUFSIZE];
 		unsigned char cbuffer[crypto_box_MACBYTES + BUFSIZE];
 		unsigned short nread, nwrite;
 		fd_set rd_set;
@@ -533,30 +533,30 @@ int main(int argc, char *argv[]) {
 
 		/* Action on TUN */
 		if(FD_ISSET(tap_fd, &rd_set)){
-			nread = fd_read(tap_fd, buffer, BUFSIZE);
+			nread = fd_read(tap_fd, (unsigned char *)buffer, BUFSIZE);
 
 			if (cfg.debug) lprintf("[dbug] Read %d bytes from tun\n", nread);
 
 			unsigned char nonce[crypto_box_NONCEBYTES];
 			randombytes_buf(nonce, crypto_box_NONCEBYTES);
-			crypto_box_easy_afternm(cbuffer, (const unsigned char *)buffer, nread, nonce, sshk);
+			crypto_box_easy_afternm(cbuffer, buffer, nread, nonce, sshk);
 
 			encap.client_id = htonl(1);
 			encap.packet_chk = htonl(PACKET_MAGIC);
 			encap.data_len = htons(crypto_box_MACBYTES + nread);
 			encap.mode = STREAM;
-			strncpy((char *)encap.nonce, (const char *)nonce, crypto_box_NONCEBYTES);
+			memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
 			/* Write packet */
-			nwrite = fd_write(net_fd, (char *)&encap, sizeof(encap));
-			nwrite = fd_write(net_fd, (char *)cbuffer, crypto_box_MACBYTES + nread);
+			nwrite = fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
+			nwrite = fd_write(net_fd, (unsigned char *)cbuffer, crypto_box_MACBYTES + nread);
 
 			if (cfg.debug) lprintf("[dbug] Wrote %d bytes to socket\n", nwrite);
 		}
 
 		/* Action on socket */
 		if(FD_ISSET(net_fd, &rd_set)){
-			nread = fd_count(net_fd, (char *)&encap, sizeof(encap));
+			nread = fd_count(net_fd, (unsigned char *)&encap, sizeof(encap));
 			if(nread == 0) {
 				close(net_fd);
 				continue;
@@ -568,7 +568,7 @@ int main(int argc, char *argv[]) {
 				if (encap.mode == CLIENT_HELLO) {
 					/* Read packet */
 					struct handshake client_key;
-					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
+					nread = fd_count(net_fd, (unsigned char *)&client_key, sizeof(client_key));
 
 					unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 					unsigned long long pk_unsigned_len;
@@ -598,8 +598,8 @@ int main(int argc, char *argv[]) {
 							strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
 							strncpy(client_key.netmask, cfg.ip_netmask, 15);
 
-							fd_write(net_fd, (char *)&encap, sizeof(encap));
-							fd_write(net_fd, (char *)&client_key, sizeof(client_key));
+							fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
+							fd_write(net_fd, (unsigned char *)&client_key, sizeof(client_key));
 
 							lprintf("[info] Client %d assigned %s\n", 1, client_key.ip);
 						} else {
@@ -609,7 +609,7 @@ int main(int argc, char *argv[]) {
 				} else if (encap.mode == SERVER_HELLO) {
 					/* Read packet */
 					struct handshake client_key;
-					nread = fd_count(net_fd, (char *)&client_key, sizeof(client_key));
+					nread = fd_count(net_fd, (unsigned char *)&client_key, sizeof(client_key));
 
 					unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 					unsigned long long pk_unsigned_len;
@@ -640,9 +640,9 @@ int main(int argc, char *argv[]) {
 					}
 				} else if (encap.mode == STREAM) {
 					/* Read packet */
-					nread = fd_count(net_fd, (char *)cbuffer, ntohs(encap.data_len));
+					nread = fd_count(net_fd, (unsigned char *)cbuffer, ntohs(encap.data_len));
 
-					if (crypto_box_open_easy_afternm((unsigned char *)buffer, cbuffer, ntohs(encap.data_len), encap.nonce, sshk) != 0) {
+					if (crypto_box_open_easy_afternm(buffer, cbuffer, ntohs(encap.data_len), encap.nonce, sshk) != 0) {
 						if (cfg.debug) lprintf("[dbug] Unable to decrypt packet\n");
 					} else {
 						nwrite = fd_write(tap_fd, buffer, nread);
@@ -656,7 +656,7 @@ int main(int argc, char *argv[]) {
 					encap.data_len = 0;
 					encap.mode = PING_BACK;
 
-					fd_write(net_fd, (char *)&encap, sizeof(encap));
+					fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
 				} else if (encap.mode == PING_BACK) {
 					/* Log pingback */
 					lprintf("[info] Server pingback\n");
