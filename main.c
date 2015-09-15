@@ -7,6 +7,7 @@
 #include <sys/ioctl.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#include <linux/limits.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
 #include <stdarg.h>
@@ -21,6 +22,7 @@
 
 #define BUFSIZE				2048
 #define CERTSIZE			32
+#define ADDRSIZE			16
 #define DEF_PORT			5059
 #define DEF_IFNAME			"tun0"
 #define DEF_ROUTER_ADDR		"10.7.0.1"
@@ -54,8 +56,8 @@ enum mode {
 
 struct handshake {
 	char pubkey[crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
-	char ip[16];
-	char netmask[16];
+	char ip[ADDRSIZE];
+	char netmask[ADDRSIZE];
 } __attribute__ ((packed));
 
 struct wrapper {
@@ -265,8 +267,8 @@ void usage(char *name) {
 
 int main(int argc, char *argv[]) {
 	int flags = IFF_TUN;
-	char remote_ip[16];
-	char config_file[64];
+	char remote_ip[ADDRSIZE];
+	char config_file[NAME_MAX];
 	int tap_fd, sock_fd, net_fd, option, server = 1, config = 0;
 	struct sockaddr_in local, remote;
 	config_t cfg;
@@ -300,7 +302,7 @@ int main(int argc, char *argv[]) {
 				break;
 			case 'c':
 				server = 0;
-				strncpy(remote_ip, optarg, 15);
+				strncpy(remote_ip, optarg, ADDRSIZE-1);
 				break;
 			case 'p':
 				cfg.port = atoi(optarg);
@@ -310,7 +312,7 @@ int main(int argc, char *argv[]) {
 				break;
 			case 'f':
 				config = 1;
-				strncpy(config_file, optarg, 63);
+				strncpy(config_file, optarg, NAME_MAX-1);
 				break;
 			default:
 				fprintf(stderr, "Unknown option %c\n", option);
