@@ -30,7 +30,7 @@
 #define DEF_MAX_CLIENTS		20
 #define PACKET_MAGIC		0xdeadbaba
 
-const static unsigned char version[] = "CarbonVPN 0.8 - See Github";
+const static unsigned char version[] = "CarbonVPN 0.9 - See Github";
 
 typedef struct {
 	unsigned short port;
@@ -49,6 +49,8 @@ typedef struct {
 enum mode {
 	CLIENT_HELLO = 1,
 	SERVER_HELLO,
+	CLIENT_EPHEX,
+	SERVER_EPHEX,
 	STREAM,
 	PING,
 	PING_BACK,
@@ -63,6 +65,7 @@ struct handshake {
 struct wrapper {
 	unsigned int client_id;
 	int packet_chk;
+	int packet_cnt;
 	unsigned short data_len;
 	unsigned char mode;
 	unsigned char nonce[crypto_box_NONCEBYTES];
@@ -272,6 +275,11 @@ int main(int argc, char *argv[]) {
 	int tap_fd, sock_fd, net_fd, option, server = 1, config = 0;
 	struct sockaddr_in local, remote;
 	config_t cfg;
+
+	unsigned char st_pk[crypto_box_PUBLICKEYBYTES];
+	unsigned char st_sk[crypto_box_SECRETKEYBYTES];
+	memset(&st_pk, 0, crypto_box_PUBLICKEYBYTES);
+	memset(&st_pk, 0, crypto_box_SECRETKEYBYTES);
 
 	memset(&cfg, 0, sizeof(config_t));
 	cfg.port = DEF_PORT;
@@ -550,8 +558,10 @@ int main(int argc, char *argv[]) {
 		unsigned short nread, nwrite;
 		fd_set rd_set;
 		struct wrapper encap;
-		unsigned char ppk[crypto_box_PUBLICKEYBYTES];
-		unsigned char sshk[crypto_box_BEFORENMBYTES];
+		unsigned char client_pk[crypto_box_PUBLICKEYBYTES];
+		//unsigned char sshk[crypto_box_BEFORENMBYTES];
+
+		crypto_box_keypair(st_pk, st_sk);
 
 		FD_ZERO(&rd_set);
 		FD_SET(tap_fd, &rd_set);
@@ -565,7 +575,6 @@ int main(int argc, char *argv[]) {
 
 		if (ret < 0) {
 			lprint("[warn] No devices in list\n");
-			sodium_memzero(sshk, sizeof(sshk));
 			goto error;
 		}
 
@@ -577,7 +586,7 @@ int main(int argc, char *argv[]) {
 
 			unsigned char nonce[crypto_box_NONCEBYTES];
 			randombytes_buf(nonce, crypto_box_NONCEBYTES);
-			crypto_box_easy_afternm(cbuffer, buffer, nread, nonce, sshk);
+			//crypto_box_easy_afternm(cbuffer, buffer, nread, nonce, sshk);
 
 			encap.client_id = htonl(1);
 			encap.packet_chk = htonl(PACKET_MAGIC);
@@ -604,7 +613,6 @@ int main(int argc, char *argv[]) {
 				if (cfg.debug) lprintf("[dbug] Read %d bytes from socket\n", nread);
 
 				if (encap.mode == CLIENT_HELLO) {
-					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (unsigned char *)&client_key, sizeof(client_key));
 
@@ -617,7 +625,7 @@ int main(int argc, char *argv[]) {
 					
 						unsigned char ca_fp[crypto_generichash_BYTES];
 						unsigned char cl_fp[crypto_generichash_BYTES];
-						memcpy(ppk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+						memcpy(client_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
 						memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
 
 						crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
@@ -625,7 +633,7 @@ int main(int argc, char *argv[]) {
 						if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
 							lprintf("[info] Client signature verified\n");
 
-							crypto_box_beforenm(sshk, ppk, cfg.sk);
+							//crypto_box_beforenm(sshk, client_pk, cfg.sk);
 
 							encap.client_id = htonl(1);
 							encap.packet_chk = htonl(PACKET_MAGIC);
@@ -645,7 +653,6 @@ int main(int argc, char *argv[]) {
 						}
 					}
 				} else if (encap.mode == SERVER_HELLO) {
-					/* Read packet */
 					struct handshake client_key;
 					nread = fd_count(net_fd, (unsigned char *)&client_key, sizeof(client_key));
 
@@ -658,7 +665,7 @@ int main(int argc, char *argv[]) {
 					
 						unsigned char ca_fp[crypto_generichash_BYTES];
 						unsigned char cl_fp[crypto_generichash_BYTES];
-						memcpy(ppk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+						memcpy(client_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
 						memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
 
 						crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
@@ -666,7 +673,25 @@ int main(int argc, char *argv[]) {
 						if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
 							lprintf("[info] Server signature verified\n");
 
-							crypto_box_beforenm(sshk, ppk, cfg.sk);
+							//crypto_box_beforenm(sshk, client_pk, cfg.sk);
+
+							unsigned char nonce[crypto_box_NONCEBYTES];
+							unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
+							randombytes_buf(nonce, crypto_box_NONCEBYTES);
+
+							printf("ST client public key");
+							print_hex(st_pk, crypto_box_PUBLICKEYBYTES);
+
+							crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, client_pk, cfg.sk);
+
+							encap.client_id = htonl(1);
+							encap.packet_chk = htonl(PACKET_MAGIC);
+							encap.data_len = 0;
+							encap.mode = CLIENT_EPHEX;
+							memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
+
+							fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
+							fd_write(net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
 
 							int sock = set_ip(cfg.if_name, client_key.ip);
 							set_netmask(sock, cfg.if_name, client_key.netmask);
@@ -676,17 +701,60 @@ int main(int argc, char *argv[]) {
 							lprintf("[erro] Server signature mismatch\n");
 						}
 					}
+				} else if (encap.mode == CLIENT_EPHEX) {
+					unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
+					unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
+					nread = fd_count(net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
+
+					if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, client_pk, cfg.sk) != 0) {
+						if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
+					} else {
+						lprintf("[info] Ephemeral key exchanged\n");
+
+						printf("ST client public key");
+						print_hex(cl_st_pk, crypto_box_PUBLICKEYBYTES);
+
+						unsigned char nonce[crypto_box_NONCEBYTES];
+						randombytes_buf(nonce, crypto_box_NONCEBYTES);
+
+						printf("ST server public key");
+						print_hex(st_pk, crypto_box_PUBLICKEYBYTES);
+
+						crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, client_pk, cfg.sk);
+
+						encap.client_id = htonl(1);
+						encap.packet_chk = htonl(PACKET_MAGIC);
+						encap.data_len = 0;
+						encap.mode = SERVER_EPHEX;
+						memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
+
+						fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
+						fd_write(net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
+					}
+				} else if (encap.mode == SERVER_EPHEX) {
+					unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
+					unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
+					nread = fd_count(net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
+
+					if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, client_pk, cfg.sk) != 0) {
+						if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
+					} else {
+						lprintf("[info] Ephemeral key exchanged\n");
+
+						printf("ST server public key");
+						print_hex(cl_st_pk, crypto_box_PUBLICKEYBYTES);
+					}
 				} else if (encap.mode == STREAM) {
 					/* Read packet */
 					nread = fd_count(net_fd, (unsigned char *)cbuffer, ntohs(encap.data_len));
 
-					if (crypto_box_open_easy_afternm(buffer, cbuffer, ntohs(encap.data_len), encap.nonce, sshk) != 0) {
+					/*if (crypto_box_open_easy_afternm(buffer, cbuffer, ntohs(encap.data_len), encap.nonce, sshk) != 0) {
 						if (cfg.debug) lprintf("[dbug] Unable to decrypt packet\n");
 					} else {
 						nwrite = fd_write(tap_fd, buffer, nread);
 
 						if (cfg.debug) lprintf("[dbug] Wrote %d bytes to tun\n", nwrite);
-					}
+					}*/
 				} else if (encap.mode == PING) {
 					/* Ping back */
 					encap.client_id = htonl(1);
@@ -711,6 +779,9 @@ error:
 	free(cfg.if_name);
 	free(cfg.ip);
 	free(cfg.ip_netmask);
+
+	//sodium_memzero(sshk, sizeof(sshk));
+	sodium_memzero(st_sk, crypto_box_SECRETKEYBYTES);
 
 	stop_log();
 
