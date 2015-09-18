@@ -10,10 +10,12 @@
 #include <linux/limits.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <getopt.h>
 #include <errno.h>
 #include <sodium.h>
+#include <ev.h>
 
 #include "endian.h"
 #include "logger.h"
@@ -32,6 +34,7 @@
 #define PACKET_CNT			1024
 
 const static unsigned char version[] = "CarbonVPN 0.9 - See Github";
+static volatile int active = 1;
 
 typedef struct {
 	unsigned short port;
@@ -252,6 +255,11 @@ int fd_count(int fd, unsigned char *buf, int n) {
 		}
 	}
 	return n;
+}
+
+void hint(int dummy) {
+	lprint("[info] Shutdown daemon\n");
+	active = 0;
 }
 
 void usage(char *name) {
@@ -481,6 +489,9 @@ int main(int argc, char *argv[]) {
 		goto error;
 	}
 
+	// Handle shutdown correct
+	signal(SIGINT, hint);
+
 	/* Client or server mode */
 	if (!cfg.server) {
 		/* Assign the destination address */
@@ -560,7 +571,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	int maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
-	while (1) {
+	while (active) {
 		unsigned char buffer[BUFSIZE];
 		unsigned char cbuffer[crypto_box_MACBYTES + BUFSIZE];
 		unsigned short nread, nwrite;
