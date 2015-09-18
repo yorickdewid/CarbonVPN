@@ -257,7 +257,7 @@ int fd_count(int fd, unsigned char *buf, int n) {
 	return n;
 }
 
-void hint(int dummy) {
+void sig_handler(int dummy) {
 	lprint("[info] Shutdown daemon\n");
 	active = 0;
 }
@@ -490,7 +490,20 @@ int main(int argc, char *argv[]) {
 	}
 
 	// Handle shutdown correct
-	signal(SIGINT, hint);
+	if (signal(SIGINT, sig_handler) == SIG_ERR) {
+		lprint("[erro] Cannot hook signal\n");
+		goto error;
+	}
+
+	if (signal(SIGTERM, sig_handler) == SIG_ERR) {
+		lprint("[erro] Cannot hook signal\n");
+		goto error;
+	}
+
+	if (signal(SIGUSR1, sig_handler) == SIG_ERR) {
+		lprint("[erro] Cannot hook signal\n");
+		goto error;
+	}
 
 	/* Client or server mode */
 	if (!cfg.server) {
