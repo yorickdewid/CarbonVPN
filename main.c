@@ -35,20 +35,11 @@
 #define PACKET_CNT			1024
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.2 - See Github";
+const static unsigned char version[] = "CarbonVPN 0.3 - See Github";
 static volatile int active = 1;
 static int total_clients = 0;
 vector_t vector_clients;
-
-//TMP - this will be in the client struct {
-int _tmp_tap_fd, _tmp_sock_fd;
-static int pcnt = PACKET_CNT;
-unsigned char st_pk[crypto_box_PUBLICKEYBYTES];
-unsigned char st_sk[crypto_box_SECRETKEYBYTES];
-
-unsigned char cl_lt_pk[crypto_box_PUBLICKEYBYTES];
-unsigned char sshk[crypto_box_BEFORENMBYTES];
-// }
+int tap_fd;
 
 static struct sock_ev_client *conn_client = NULL;
 
@@ -81,8 +72,14 @@ enum mode {
 
 struct sock_ev_client {
 	ev_io io;
-	int fd;
+	//int tun_fd;
+	int net_fd;
 	int index;
+	unsigned int packet_cnt;
+	unsigned char st_pk[crypto_box_PUBLICKEYBYTES];
+	unsigned char st_sk[crypto_box_SECRETKEYBYTES];
+	unsigned char cl_lt_pk[crypto_box_PUBLICKEYBYTES];
+	unsigned char sshk[crypto_box_BEFORENMBYTES];
 };
 
 struct handshake {
@@ -255,13 +252,17 @@ redo:
 		} else {
 			int i;
 			struct sock_ev_client *client = NULL;
-			for (i=0; i<vector_clients.size; ++i) { //TODO
+			for (i=0; i<vector_clients.size; ++i) {
 				client = (struct sock_ev_client *)vector_get(&vector_clients, i);
 				if (!client)
 					continue;
-				if (client->fd == fd) {
+				if (client->net_fd == fd) {
+					sodium_memzero(client->sshk, sizeof(client->sshk));
+					sodium_memzero(client->st_sk, crypto_box_SECRETKEYBYTES);
+
 					ev_io_stop(EV_A_ &client->io);
 					lprintf("[info] Client %d removed\n", client->index);
+
 					free(client);
 					vector_clients.data[i] = NULL;
 				}
@@ -339,7 +340,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 
 	struct sock_ev_client *client = (struct sock_ev_client *)watcher;
 
-	read = fd_read(client->fd, (unsigned char *)&encap, sizeof(encap));
+	read = fd_read(client->net_fd, (unsigned char *)&encap, sizeof(encap));
 	if (read <= 0)
 		return;
 
@@ -356,7 +357,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 	switch (encap.mode) {
 		case CLIENT_HELLO: {
 			struct handshake client_key;
-			read = fd_read(client->fd, (unsigned char *)&client_key, sizeof(client_key));
+			read = fd_read(client->net_fd, (unsigned char *)&client_key, sizeof(client_key));
 
 			unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 			unsigned long long pk_unsigned_len;
@@ -367,7 +368,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			
 				unsigned char ca_fp[crypto_generichash_BYTES];
 				unsigned char cl_fp[crypto_generichash_BYTES];
-				memcpy(cl_lt_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+				memcpy(client->cl_lt_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
 				memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
 
 				crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
@@ -377,7 +378,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 
 					encap.client_id = htonl(1);
 					encap.packet_chk = htonl(PACKET_MAGIC);
-					encap.packet_cnt = htonl(pcnt--);
+					encap.packet_cnt = htonl(client->packet_cnt--);
 					encap.data_len = 0;
 					encap.mode = SERVER_HELLO;
 
@@ -385,8 +386,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
 					strncpy(client_key.netmask, cfg.ip_netmask, 15);
 
-					send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
-					send(client->fd, (unsigned char *)&client_key, sizeof(client_key), 0);
+					send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
+					send(client->net_fd, (unsigned char *)&client_key, sizeof(client_key), 0);
 
 					lprintf("[info] Client %d assigned %s\n", 1, client_key.ip);
 				} else {
@@ -397,7 +398,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		}
 		case SERVER_HELLO: {
 			struct handshake client_key;
-			read = fd_read(client->fd, (unsigned char *)&client_key, sizeof(client_key));
+			read = fd_read(client->net_fd, (unsigned char *)&client_key, sizeof(client_key));
 
 			unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 			unsigned long long pk_unsigned_len;
@@ -408,7 +409,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			
 				unsigned char ca_fp[crypto_generichash_BYTES];
 				unsigned char cl_fp[crypto_generichash_BYTES];
-				memcpy(cl_lt_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+				memcpy(client->cl_lt_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
 				memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
 
 				crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
@@ -419,20 +420,20 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					unsigned char nonce[crypto_box_NONCEBYTES];
 					unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
 					randombytes_buf(nonce, crypto_box_NONCEBYTES);
-					crypto_box_keypair(st_pk, st_sk);
+					crypto_box_keypair(client->st_pk, client->st_sk);
 
-					pcnt = PACKET_CNT;
-					crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, cl_lt_pk, cfg.sk);
+					client->packet_cnt = PACKET_CNT;
+					crypto_box_easy(ciphertext, client->st_pk, crypto_box_PUBLICKEYBYTES, nonce, client->cl_lt_pk, cfg.sk);
 
 					encap.client_id = htonl(1);
 					encap.packet_chk = htonl(PACKET_MAGIC);
-					encap.packet_cnt = htonl(pcnt--);
+					encap.packet_cnt = htonl(client->packet_cnt--);
 					encap.data_len = 0;
 					encap.mode = INIT_EPHEX;
 					memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-					send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
-					send(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
+					send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
+					send(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
 
 					int sock = set_ip(cfg.if_name, client_key.ip);
 					set_netmask(sock, cfg.if_name, client_key.netmask);
@@ -447,56 +448,56 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		case INIT_EPHEX: {
 			unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
 			unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
-			read = fd_read(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
+			read = fd_read(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
 
-			if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, cl_lt_pk, cfg.sk) != 0) {
+			if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, client->cl_lt_pk, cfg.sk) != 0) {
 				if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
 			} else {
 				lprintf("[info] Ephemeral key exchanged\n");
 
 				unsigned char nonce[crypto_box_NONCEBYTES];
 				randombytes_buf(nonce, crypto_box_NONCEBYTES);
-				crypto_box_keypair(st_pk, st_sk);
+				crypto_box_keypair(client->st_pk, client->st_sk);
 
-				pcnt = PACKET_CNT;
-				crypto_box_beforenm(sshk, cl_st_pk, st_sk);
-				crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, cl_lt_pk, cfg.sk);
+				client->packet_cnt = PACKET_CNT;
+				crypto_box_beforenm(client->sshk, cl_st_pk, client->st_sk);
+				crypto_box_easy(ciphertext, client->st_pk, crypto_box_PUBLICKEYBYTES, nonce, client->cl_lt_pk, cfg.sk);
 
 				encap.client_id = htonl(1);
 				encap.packet_chk = htonl(PACKET_MAGIC);
-				encap.packet_cnt = htonl(pcnt--);
+				encap.packet_cnt = htonl(client->packet_cnt--);
 				encap.data_len = 0;
 				encap.mode = RESP_EPHEX;
 				memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-				send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
-				send(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
+				send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
+				send(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
 			}
 			break;
 		}
 		case RESP_EPHEX: {
 			unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
 			unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
-			read = fd_read(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
+			read = fd_read(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
 
-			if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, cl_lt_pk, cfg.sk) != 0) {
+			if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, client->cl_lt_pk, cfg.sk) != 0) {
 				if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
 			} else {
 				lprintf("[info] Ephemeral key exchanged\n");
 
-				crypto_box_beforenm(sshk, cl_st_pk, st_sk);
+				crypto_box_beforenm(client->sshk, cl_st_pk, client->st_sk);
 			}
 			break;
 		}
 		case STREAM: {
-			read = fd_read(client->fd, (unsigned char *)&cbuffer, ntohs(encap.data_len));
+			read = fd_read(client->net_fd, (unsigned char *)&cbuffer, ntohs(encap.data_len));
 
-			if (crypto_box_open_easy_afternm(buffer, cbuffer, ntohs(encap.data_len), encap.nonce, sshk) != 0) {
+			if (crypto_box_open_easy_afternm(buffer, cbuffer, ntohs(encap.data_len), encap.nonce, client->sshk) != 0) {
 				if (cfg.debug) lprintf("[dbug] Unable to decrypt packet\n");
 			} else {
 				int nwrite;
 
-				if((nwrite = write(_tmp_tap_fd, buffer, read))<0){
+				if((nwrite = write(tap_fd, buffer, read))<0){
 					lprint("[warn] Cannot write device\n");
 					return;
 				}
@@ -508,11 +509,11 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		case PING:
 			encap.client_id = htonl(1);
 			encap.packet_chk = htonl(PACKET_MAGIC);
-			encap.packet_cnt = htonl(pcnt--);
+			encap.packet_cnt = htonl(client->packet_cnt--);
 			encap.data_len = 0;
 			encap.mode = PING_BACK;
 
-			send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
+			send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
 			break;
 		case PING_BACK:
 			lprintf("[info] Server pingback\n");
@@ -528,24 +529,24 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		unsigned char nonce[crypto_box_NONCEBYTES];
 		unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
 		randombytes_buf(nonce, crypto_box_NONCEBYTES);
-		crypto_box_keypair(st_pk, st_sk);
+		crypto_box_keypair(client->st_pk, client->st_sk);
 
-		pcnt = PACKET_CNT;
-		crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, cl_lt_pk, cfg.sk);
+		client->packet_cnt = PACKET_CNT;
+		crypto_box_easy(ciphertext, client->st_pk, crypto_box_PUBLICKEYBYTES, nonce, client->cl_lt_pk, cfg.sk);
 
 		encap.client_id = htonl(1);
 		encap.packet_chk = htonl(PACKET_MAGIC);
-		encap.packet_cnt = htonl(pcnt--);
+		encap.packet_cnt = htonl(client->packet_cnt--);
 		encap.data_len = 0;
 		encap.mode = INIT_EPHEX;
 		memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-		if (send(client->fd, (unsigned char *)&encap, sizeof(encap), 0)<0) {
+		if (send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0)<0) {
 			perror("send");
 			return;
 		}
 
-		if (send(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0)<0) {
+		if (send(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0)<0) {
 			perror("send");
 			return;
 		}
@@ -565,30 +566,38 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 
 	if (cfg.debug) lprintf("[dbug] Read %d bytes from tun\n", nread);
 
-	unsigned char nonce[crypto_box_NONCEBYTES];
-	randombytes_buf(nonce, crypto_box_NONCEBYTES);
-	crypto_box_easy_afternm(cbuffer, buffer, nread, nonce, sshk);
+	int i;
+	struct sock_ev_client *client = NULL;
+	for (i=0; i<vector_clients.size; ++i) {
+		client = (struct sock_ev_client *)vector_get(&vector_clients, i);
+		if (!client)
+			continue;
 
-	struct wrapper encap;
-	encap.client_id = htonl(1);
-	encap.packet_chk = htonl(PACKET_MAGIC);
-	encap.packet_cnt = htonl(pcnt--);
-	encap.data_len = htons(crypto_box_MACBYTES + nread);
-	encap.mode = STREAM;
-	memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
+		unsigned char nonce[crypto_box_NONCEBYTES];
+		randombytes_buf(nonce, crypto_box_NONCEBYTES);
+		crypto_box_easy_afternm(cbuffer, buffer, nread, nonce, client->sshk);
 
-	/* Write packet */
-	if (send(_tmp_sock_fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
-		perror("send");
-		return;
+		struct wrapper encap;
+		encap.client_id = htonl(1);
+		encap.packet_chk = htonl(PACKET_MAGIC);
+		encap.packet_cnt = htonl(client->packet_cnt--);
+		encap.data_len = htons(crypto_box_MACBYTES + nread);
+		encap.mode = STREAM;
+		memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
+
+		/* Write packet */
+		if (send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
+			perror("send");
+			return;
+		}
+
+		if (send(client->net_fd, cbuffer, crypto_box_MACBYTES + nread, 0)<0) {
+			perror("send2");
+			return;
+		}
+
+		if (cfg.debug) lprintf("[dbug] Wrote %d bytes to socket\n", crypto_box_MACBYTES + nread);
 	}
-
-	if (send(_tmp_sock_fd, cbuffer, crypto_box_MACBYTES + nread, 0)<0) {
-		perror("send2");
-		return;
-	}
-
-	if (cfg.debug) lprintf("[dbug] Wrote %d bytes to socket\n", crypto_box_MACBYTES + nread);
 }
 
 /* Accept client requests */
@@ -596,7 +605,7 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 	struct sockaddr_in client_addr;
 	socklen_t client_len = sizeof(client_addr);
 	int sd;
-	struct sock_ev_client *client = (struct sock_ev_client *)malloc(sizeof(struct sock_ev_client));
+	struct sock_ev_client *client = (struct sock_ev_client *)calloc(1, sizeof(struct sock_ev_client));
 	
 	if (EV_ERROR & revents) {
 		perror("got invalid event");
@@ -618,8 +627,8 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 		return;
 	}
 
-	_tmp_sock_fd = sd;
-	client->fd = sd;
+	client->packet_cnt = PACKET_CNT;
+	client->net_fd = sd;
 	client->index = ++total_clients; // Increment total_clients count
 	lprint("[info] Successfully connected with client\n");
 	lprintf("[info] %d client(s) connected\n", total_clients);
@@ -635,7 +644,7 @@ int client_connect(EV_P_ char *remote_addr) {
 	int sd;
  	struct sockaddr_in remote;
  	struct wrapper encap;
- 	conn_client = (struct sock_ev_client *)malloc(sizeof(struct sock_ev_client));
+ 	conn_client = (struct sock_ev_client *)calloc(1, sizeof(struct sock_ev_client));
 
  	// Create client socket
 	if ((sd = socket(AF_INET, SOCK_STREAM, 0))<0){
@@ -649,8 +658,8 @@ int client_connect(EV_P_ char *remote_addr) {
 		return -1;
 	}
 
-	_tmp_sock_fd = sd;
-	conn_client->fd = sd;
+	conn_client->packet_cnt = PACKET_CNT;
+	conn_client->net_fd = sd;
 	conn_client->index = 0;
 
 	// initialize the send callback, but wait to start until there is data to write
@@ -671,33 +680,35 @@ int client_connect(EV_P_ char *remote_addr) {
 	}
 	lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
 
+	vector_append(&vector_clients, (void *)conn_client);
+
 retry:
 	encap.client_id = htonl(1);
 	encap.packet_chk = htonl(PACKET_MAGIC);
-	encap.packet_cnt = htonl(pcnt--);
+	encap.packet_cnt = htonl(conn_client->packet_cnt--);
 	encap.data_len = 0;
 	encap.mode = PING;
 
-	if (send(conn_client->fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
+	if (send(conn_client->net_fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
 		perror("send PING");
 		goto retry;
 	}
 
 	encap.client_id = htonl(1);
 	encap.packet_chk = htonl(PACKET_MAGIC);
-	encap.packet_cnt = htonl(pcnt--);
+	encap.packet_cnt = htonl(conn_client->packet_cnt--);
 	encap.data_len = 0;
 	encap.mode = CLIENT_HELLO;
 
 	struct handshake client_key;
 	memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
-	if (send(conn_client->fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
+	if (send(conn_client->net_fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
 		perror("send encap");
 		return -1;
 	}
 
-	if (send(conn_client->fd, (unsigned char *)&client_key, sizeof(client_key), 0)<0){
+	if (send(conn_client->net_fd, (unsigned char *)&client_key, sizeof(client_key), 0)<0){
 		perror("send key");
 		return -1;
 	}
@@ -749,7 +760,6 @@ int main(int argc, char *argv[]) {
 	loop = EV_DEFAULT;
 	struct ev_io w_accept, w_tun;
 
-	memset(sshk, 0, crypto_box_BEFORENMBYTES);
 	memset(&cfg, 0, sizeof(config_t));
 	
 	cfg.server = 1;
@@ -938,7 +948,6 @@ int main(int argc, char *argv[]) {
 		goto error;
 	}
 
-#if 0
 	// Handle shutdown correct
 	if (signal(SIGINT, sig_handler) == SIG_ERR) {
 		lprint("[erro] Cannot hook signal\n");
@@ -954,13 +963,12 @@ int main(int argc, char *argv[]) {
 		lprint("[erro] Cannot hook signal\n");
 		goto error;
 	}
-#endif
 
 	/* Initialize tun/tap interface */
-	_tmp_tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI);
+	tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI);
 
 	// Initialize and start watcher to read tun interface
-	ev_io_init(&w_tun, tun_cb, _tmp_tap_fd, EV_READ);
+	ev_io_init(&w_tun, tun_cb, tap_fd, EV_READ);
 	ev_io_start(EV_A_ &w_tun);
 
 	/* Client or server mode */
@@ -989,9 +997,6 @@ error:
 	free(cfg.if_name);
 	free(cfg.ip);
 	free(cfg.ip_netmask);
-
-	sodium_memzero(sshk, sizeof(sshk));
-	sodium_memzero(st_sk, crypto_box_SECRETKEYBYTES);
 
 	vector_free(&vector_clients);
 

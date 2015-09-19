@@ -41,7 +41,7 @@ void vector_double_capacity_if_full(vector_t *vector) {
 	if (vector->size >= vector->capacity) {
 		// double vector->capacity and resize the allocated memory accordingly
 		vector->capacity *= 2;
-		vector->data = realloc(vector->data, sizeof(int) * vector->capacity);
+		vector->data = realloc(vector->data, sizeof(void *) * vector->capacity);
 	}
 }
 
