@@ -33,8 +33,22 @@
 #define PACKET_MAGIC		0xdeadbaba
 #define PACKET_CNT			1024
 
-const static unsigned char version[] = "CarbonVPN 0.9 - See Github";
+EV_P;
+const static unsigned char version[] = "CarbonVPN 0.2 - See Github";
 static volatile int active = 1;
+static int total_clients = 0;
+
+//TMP - this will be in the client struct {
+int _tmp_tap_fd, _tmp_sock_fd;
+static int pcnt = PACKET_CNT;
+unsigned char st_pk[crypto_box_PUBLICKEYBYTES];
+unsigned char st_sk[crypto_box_SECRETKEYBYTES];
+
+unsigned char cl_lt_pk[crypto_box_PUBLICKEYBYTES];
+unsigned char sshk[crypto_box_BEFORENMBYTES];
+// }
+
+static struct sock_ev_client *conn_client = NULL;
 
 typedef struct {
 	unsigned short port;
@@ -51,6 +65,8 @@ typedef struct {
 	unsigned char sk[crypto_box_SECRETKEYBYTES];
 } config_t;
 
+config_t cfg;
+
 enum mode {
 	CLIENT_HELLO = 1,
 	SERVER_HELLO,
@@ -59,6 +75,12 @@ enum mode {
 	STREAM,
 	PING,
 	PING_BACK,
+};
+
+struct sock_ev_client {
+	ev_io io;
+	int fd;
+	int index;
 };
 
 struct handshake {
@@ -120,6 +142,14 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 	return 1;
 }
 
+int setnonblock(int fd) {
+	int flags;
+
+	flags = fcntl(fd, F_GETFL);
+	flags |= O_NONBLOCK;
+	return fcntl(fd, F_SETFL, flags);
+}
+
 int create_socket() {
 	int sock_fd = 0;
 
@@ -129,31 +159,6 @@ int create_socket() {
 	}
 
  	return sock_fd;
-}
-
-int set_tun(char *dev, int flags) {
-	struct ifreq ifr;
-	int fd, err;
-
-	if((fd = open("/dev/net/tun", O_RDWR)) < 0 ) {
-		lprint("[erro] Cannot create interface\n");
-		return -1;
-	}
-
-	memset(&ifr, 0, sizeof(ifr));
-	ifr.ifr_flags = flags;
-
-	if (*dev)
-		strncpy(ifr.ifr_name, dev, IFNAMSIZ);
-
-	if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
-		lprint("[erro] Cannot set interface\n");
-		close(fd);
-		return err;
-	}
-
-	strcpy(dev, ifr.ifr_name);
-	return fd;
 }
 
 int set_ip(char *ifname, char *ip_addr) {
@@ -223,38 +228,28 @@ char *incr_ip(char *ip_addr, unsigned char increment) {
 }
 
 int fd_read(int fd, unsigned char *buf, int n){
-	int nread;
-
-	if((nread = read(fd, buf, n))<0){
-		lprint("[warn] Cannot read device\n");
-		return -1;
-	}
-	return nread;
-}
-
-int fd_write(int fd, unsigned char *buf, int n){
-	int nwrite;
-
-	if((nwrite = write(fd, buf, n))<0){
-		lprint("[warn] Cannot write device\n");
-		return -1;
-	}
-	return nwrite;
-}
-
-int fd_count(int fd, unsigned char *buf, int n) {
-	int nread, left = n;
-
-	/* Read until buffer is 0 */
-	while (left > 0) {
-		if (!(nread = fd_read(fd, buf, left))){
-			return 0;
-		}else {
-			left -= nread;
-			buf += nread;
+	int read;
+redo:
+	read = recv(fd, buf, n, MSG_WAITALL);
+	if (read < 0) {
+		if (EAGAIN == errno) {
+			goto redo; //TODO
+		} else {
+			perror("read error");
 		}
+		return read;
 	}
-	return n;
+
+	if (read == 0) {
+		// Stop and free watchet if client socket is closing
+		lprint("[info] Client disconnected\n");
+		//ev_io_stop(EV_A_ &client->io);  //TODO: this needs to be done somewhere
+		close(fd);
+		//free(client); //TODO: this needs to be done somewhere
+		total_clients--; // Decrement total_clients count
+		lprintf("[info] %d client(s) connected\n", total_clients);
+	}
+	return read;
 }
 
 void sig_handler(int dummy) {
@@ -278,23 +273,452 @@ void usage(char *name) {
 	fprintf(stderr, "\n%s\n", version);
 }
 
+int tun_init(char *dev, int flags) {
+	struct ifreq ifr;
+	int fd, err;
+
+	if((fd = open("/dev/net/tun", O_RDWR)) < 0 ) {
+		lprint("[erro] Cannot create interface\n");
+		return -1;
+	}
+
+	if (setnonblock(fd)<0) {
+		lprint("[erro] Cannot set nonblock\n");
+		return -1;
+	}
+
+	memset(&ifr, 0, sizeof(ifr));
+	ifr.ifr_flags = flags;
+
+	if (*dev)
+		strncpy(ifr.ifr_name, dev, IFNAMSIZ);
+
+	if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
+		lprint("[erro] Cannot set interface\n");
+		close(fd);
+		return err;
+	}
+
+	strcpy(dev, ifr.ifr_name);
+	return fd;
+}
+
+/* Read client message */
+void read_cb(EV_P_ struct ev_io *watcher, int revents){
+	unsigned char buffer[BUFSIZE];
+	unsigned char cbuffer[crypto_box_MACBYTES + BUFSIZE];
+	struct wrapper encap;
+	ssize_t read;
+
+	if (EV_ERROR & revents) {
+		perror("got invalid event");
+		return;
+	}
+
+	struct sock_ev_client *client = (struct sock_ev_client *)watcher;
+
+	read = fd_read(client->fd, (unsigned char *)&encap, sizeof(encap));
+
+	int sesscnt = ntohl(encap.packet_cnt);
+	if (cfg.debug) lprintf("[dbug] Packet count %u\n", sesscnt);
+
+	if (ntohl(encap.packet_chk) != PACKET_MAGIC) {
+		if (cfg.debug) lprintf("[dbug] Packet dropped\n");
+		return;
+	}
+
+	if (cfg.debug) lprintf("[dbug] Read %d bytes from socket\n", read);
+
+	switch (encap.mode) {
+		case CLIENT_HELLO: {
+			struct handshake client_key;
+			read = fd_read(client->fd, (unsigned char *)&client_key, sizeof(client_key));
+
+			unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
+			unsigned long long pk_unsigned_len;
+			if (crypto_sign_open(pk_unsigned, &pk_unsigned_len, (const unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.capk) != 0) {
+				lprintf("[erro] Client authentication mismatch\n");
+			} else {
+				lprintf("[info] Client authentication verified\n");
+			
+				unsigned char ca_fp[crypto_generichash_BYTES];
+				unsigned char cl_fp[crypto_generichash_BYTES];
+				memcpy(cl_lt_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+				memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
+
+				crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
+
+				if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
+					lprintf("[info] Client signature verified\n");
+
+					encap.client_id = htonl(1);
+					encap.packet_chk = htonl(PACKET_MAGIC);
+					encap.packet_cnt = htonl(pcnt--);
+					encap.data_len = 0;
+					encap.mode = SERVER_HELLO;
+
+					memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
+					strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
+					strncpy(client_key.netmask, cfg.ip_netmask, 15);
+
+					send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
+					send(client->fd, (unsigned char *)&client_key, sizeof(client_key), 0);
+
+					lprintf("[info] Client %d assigned %s\n", 1, client_key.ip);
+				} else {
+					lprintf("[erro] Client signature mismatch\n");
+				}
+			}
+			break;
+		}
+		case SERVER_HELLO: {
+			struct handshake client_key;
+			read = fd_read(client->fd, (unsigned char *)&client_key, sizeof(client_key));
+
+			unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
+			unsigned long long pk_unsigned_len;
+			if (crypto_sign_open(pk_unsigned, &pk_unsigned_len, (const unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.capk) != 0) {
+				lprintf("[erro] Server authentication mismatch\n");
+			} else {
+				lprintf("[info] Server authentication verified\n");
+			
+				unsigned char ca_fp[crypto_generichash_BYTES];
+				unsigned char cl_fp[crypto_generichash_BYTES];
+				memcpy(cl_lt_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
+				memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
+
+				crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
+
+				if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
+					lprintf("[info] Server signature verified\n");
+
+					unsigned char nonce[crypto_box_NONCEBYTES];
+					unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
+					randombytes_buf(nonce, crypto_box_NONCEBYTES);
+					crypto_box_keypair(st_pk, st_sk);
+
+					pcnt = PACKET_CNT;
+					crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, cl_lt_pk, cfg.sk);
+
+					encap.client_id = htonl(1);
+					encap.packet_chk = htonl(PACKET_MAGIC);
+					encap.packet_cnt = htonl(pcnt--);
+					encap.data_len = 0;
+					encap.mode = INIT_EPHEX;
+					memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
+
+					send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
+					send(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
+
+					int sock = set_ip(cfg.if_name, client_key.ip);
+					set_netmask(sock, cfg.if_name, client_key.netmask);
+
+					lprintf("[info] Assgined %s/%s\n", client_key.ip, client_key.netmask);
+				} else {
+					lprintf("[erro] Server signature mismatch\n");
+				}
+			}
+			break;
+		}
+		case INIT_EPHEX: {
+			unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
+			unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
+			read = fd_read(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
+
+			if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, cl_lt_pk, cfg.sk) != 0) {
+				if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
+			} else {
+				lprintf("[info] Ephemeral key exchanged\n");
+
+				unsigned char nonce[crypto_box_NONCEBYTES];
+				randombytes_buf(nonce, crypto_box_NONCEBYTES);
+				crypto_box_keypair(st_pk, st_sk);
+
+				pcnt = PACKET_CNT;
+				crypto_box_beforenm(sshk, cl_st_pk, st_sk);
+				crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, cl_lt_pk, cfg.sk);
+
+				encap.client_id = htonl(1);
+				encap.packet_chk = htonl(PACKET_MAGIC);
+				encap.packet_cnt = htonl(pcnt--);
+				encap.data_len = 0;
+				encap.mode = RESP_EPHEX;
+				memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
+
+				send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
+				send(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
+			}
+			break;
+		}
+		case RESP_EPHEX: {
+			unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
+			unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
+			read = fd_read(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
+
+			if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, cl_lt_pk, cfg.sk) != 0) {
+				if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
+			} else {
+				lprintf("[info] Ephemeral key exchanged\n");
+
+				crypto_box_beforenm(sshk, cl_st_pk, st_sk);
+			}
+			break;
+		}
+		case STREAM: {
+			read = fd_read(client->fd, (unsigned char *)&cbuffer, ntohs(encap.data_len));
+
+			if (crypto_box_open_easy_afternm(buffer, cbuffer, ntohs(encap.data_len), encap.nonce, sshk) != 0) {
+				if (cfg.debug) lprintf("[dbug] Unable to decrypt packet\n");
+			} else {
+				int nwrite;
+
+				if((nwrite = write(_tmp_tap_fd, buffer, read))<0){
+					lprint("[warn] Cannot write device\n");
+					return;
+				}
+
+				if (cfg.debug) lprintf("[dbug] Wrote %d bytes to tun\n", nwrite);
+			}
+			break;
+		}
+		case PING:
+			encap.client_id = htonl(1);
+			encap.packet_chk = htonl(PACKET_MAGIC);
+			encap.packet_cnt = htonl(pcnt--);
+			encap.data_len = 0;
+			encap.mode = PING_BACK;
+
+			send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
+			break;
+		case PING_BACK:
+			lprintf("[info] Server pingback\n");
+			break;
+		default:
+			if (cfg.debug) lprintf("[dbug] Packet dropped\n");
+
+	}
+
+	if (sesscnt == 1) {
+		lprintf("[info] Ephemeral keypair expired\n");
+
+		unsigned char nonce[crypto_box_NONCEBYTES];
+		unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
+		randombytes_buf(nonce, crypto_box_NONCEBYTES);
+		crypto_box_keypair(st_pk, st_sk);
+
+		pcnt = PACKET_CNT;
+		crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, cl_lt_pk, cfg.sk);
+
+		encap.client_id = htonl(1);
+		encap.packet_chk = htonl(PACKET_MAGIC);
+		encap.packet_cnt = htonl(pcnt--);
+		encap.data_len = 0;
+		encap.mode = INIT_EPHEX;
+		memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
+
+		send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
+		send(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
+	}
+}
+
+/* Accept client requests */
+void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
+	unsigned char buffer[BUFSIZE];
+	unsigned char cbuffer[crypto_box_MACBYTES + BUFSIZE];
+	unsigned short nread;
+
+	if((nread = read(watcher->fd, buffer, BUFSIZE))<0){
+		lprint("[warn] Cannot read device\n");
+		return;
+	}
+
+	if (cfg.debug) lprintf("[dbug] Read %d bytes from tun\n", nread);
+
+	unsigned char nonce[crypto_box_NONCEBYTES];
+	randombytes_buf(nonce, crypto_box_NONCEBYTES);
+	crypto_box_easy_afternm(cbuffer, buffer, nread, nonce, sshk);
+
+	struct wrapper encap;
+	encap.client_id = htonl(1);
+	encap.packet_chk = htonl(PACKET_MAGIC);
+	encap.packet_cnt = htonl(pcnt--);
+	encap.data_len = htons(crypto_box_MACBYTES + nread);
+	encap.mode = STREAM;
+	memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
+
+	/* Write packet */
+	if (send(_tmp_sock_fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
+		perror("send");
+		return;
+	}
+
+	if (send(_tmp_sock_fd, cbuffer, crypto_box_MACBYTES + nread, 0)<0) {
+		perror("send2");
+		return;
+	}
+
+	if (cfg.debug) lprintf("[dbug] Wrote %d bytes to socket\n", crypto_box_MACBYTES + nread);
+}
+
+/* Accept client requests */
+void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
+	struct sockaddr_in client_addr;
+	socklen_t client_len = sizeof(client_addr);
+	int sd;
+	struct sock_ev_client *client = (struct sock_ev_client *)malloc(sizeof(struct sock_ev_client));
+	
+	if (EV_ERROR & revents) {
+		perror("got invalid event");
+		return;
+	}
+
+	// Accept client request
+	sd = accept(watcher->fd, (struct sockaddr *)&client_addr, &client_len);
+	if (sd < 0) {
+		if (errno != EAGAIN && errno != EWOULDBLOCK) {
+			perror("accept error");
+			return;
+		}
+	}
+
+	// Set it non-blocking
+	if (setnonblock(sd)<0) {
+		perror("echo server socket nonblock");
+		return;
+	}
+
+	_tmp_sock_fd = sd;
+	client->fd = sd;
+	client->index = ++total_clients; // Increment total_clients count
+	lprint("[info] Successfully connected with client\n");
+	lprintf("[info] %d client(s) connected\n", total_clients);
+
+	// Initialize and start watcher to read client requests
+	ev_io_init(&client->io, read_cb, sd, EV_READ);
+	ev_io_start(EV_A_ &client->io);
+}
+
+int client_connect(EV_P_ char *remote_addr) {
+	int sd;
+ 	struct sockaddr_in remote;
+ 	conn_client = (struct sock_ev_client *)malloc(sizeof(struct sock_ev_client));
+
+ 	// Create client socket
+	if ((sd = socket(AF_INET, SOCK_STREAM, 0))<0){
+		perror("socket error");
+		return -1;
+	}
+
+	// Set it non-blocking
+	if (setnonblock(sd)<0) {
+		perror("echo server socket nonblock");
+		return -1;
+	}
+
+	_tmp_sock_fd = sd;
+	conn_client->fd = sd;
+	conn_client->index = 0;
+
+	// initialize the send callback, but wait to start until there is data to write
+	ev_io_init(&conn_client->io, read_cb, sd, EV_READ);
+	//ev_io_init(&conn_client->io, send_cb, sd, EV_READ);
+	ev_io_start(EV_A_ &conn_client->io);
+
+	memset(&remote, 0, sizeof(remote));
+	remote.sin_family = AF_INET;
+	remote.sin_port = htons(DEF_PORT);
+	remote.sin_addr.s_addr = inet_addr(remote_addr);
+
+	int res = connect(sd, (struct sockaddr *)&remote, sizeof(remote));
+	if (res < 0) {
+		if (errno != EINPROGRESS) {
+			perror("connect error");
+			return -1;
+		}
+	}
+	lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
+
+	struct wrapper encap;
+	encap.client_id = htonl(1);
+	encap.packet_chk = htonl(PACKET_MAGIC);
+	encap.packet_cnt = htonl(pcnt--);
+	encap.data_len = 0;
+	encap.mode = PING;
+
+	if (send(conn_client->fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
+		perror("send");
+		return -1;
+	}
+
+	encap.client_id = htonl(1);
+	encap.packet_chk = htonl(PACKET_MAGIC);
+	encap.packet_cnt = htonl(pcnt--);
+	encap.data_len = 0;
+	encap.mode = CLIENT_HELLO;
+
+	struct handshake client_key;
+	memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
+
+	if (send(conn_client->fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
+		perror("send");
+		return -1;
+	}
+
+	if (send(conn_client->fd, (unsigned char *)&client_key, sizeof(client_key), 0)<0){
+		perror("send");
+		return -1;
+	}
+
+  	return sd;
+}
+
+int server_init(int max_queue) {
+	int sd;
+	struct sockaddr_in addr;
+
+	// Create server socket
+	if ((sd = socket(AF_INET, SOCK_STREAM, 0))<0){
+		perror("socket error");
+		return -1;
+	}
+
+	// Set it non-blocking
+	if (setnonblock(sd)<0) {
+		perror("echo server socket nonblock");
+		return -1;
+	}
+
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(DEF_PORT);
+	addr.sin_addr.s_addr = INADDR_ANY;
+
+	// Bind socket to address
+	if (bind(sd, (struct sockaddr*)&addr, sizeof(addr))<0) {
+		perror("bind error");
+		return -1;
+	}
+
+	// Start listing on the socket
+	if (listen(sd, max_queue)<0) {
+		perror("listen error");
+		return -1;
+	}
+
+	return sd;
+}
+
 int main(int argc, char *argv[]) {
 	int flags = IFF_TUN;
 	char remote_ip[ADDRSIZE];
 	char config_file[NAME_MAX];
-	int tap_fd, sock_fd, net_fd, option, config = 0;
-	static int pcnt = PACKET_CNT;
-	struct sockaddr_in local, remote;
-	config_t cfg;
+	int tap_fd, sock_fd, option, config = 0;
+	loop = EV_DEFAULT;
+	struct ev_io w_accept, w_tun;
 
-	unsigned char st_pk[crypto_box_PUBLICKEYBYTES];
-	unsigned char st_sk[crypto_box_SECRETKEYBYTES];
-
-	unsigned char cl_lt_pk[crypto_box_PUBLICKEYBYTES];
-	unsigned char sshk[crypto_box_BEFORENMBYTES];
 	memset(sshk, 0, crypto_box_BEFORENMBYTES);
-		
 	memset(&cfg, 0, sizeof(config_t));
+	
 	cfg.server = 1;
 	cfg.port = DEF_PORT;
 	cfg.if_name = strdup(DEF_IFNAME);
@@ -478,17 +902,7 @@ int main(int argc, char *argv[]) {
 		goto error;
 	}
 
-	/* Initialize tun/tap interface */
-	if ((tap_fd = set_tun(cfg.if_name, flags | IFF_NO_PI)) < 0 ) {
-		lprintf("[erro] Cannot connect to %s\n", cfg.if_name);
-		goto error;
-	}
-
-	if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0))<0) {
-		lprint("[erro] Cannot create socket\n");
-		goto error;
-	}
-
+#if 0
 	// Handle shutdown correct
 	if (signal(SIGINT, sig_handler) == SIG_ERR) {
 		lprint("[erro] Cannot hook signal\n");
@@ -504,325 +918,41 @@ int main(int argc, char *argv[]) {
 		lprint("[erro] Cannot hook signal\n");
 		goto error;
 	}
+#endif
+
+	/* Initialize tun/tap interface */
+	if ((tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI))<0) {
+		lprintf("[erro] Cannot connect to %s\n", cfg.if_name);
+		goto error;
+	}
+	_tmp_tap_fd = tap_fd;
 
 	/* Client or server mode */
 	if (!cfg.server) {
 		/* Assign the destination address */
-		memset(&remote, 0, sizeof(remote));
-		remote.sin_family = AF_INET;
-		remote.sin_addr.s_addr = inet_addr(remote_ip);
-		remote.sin_port = htons(cfg.port);
+		client_connect(EV_A_ remote_ip);
 
-		/* Connection request */
-		if (connect(sock_fd, (struct sockaddr*)&remote, sizeof(remote))<0){
-			lprint("[erro] Cannot connect to server\n");
-			goto error;
-		}
-
-		net_fd = sock_fd;
-		lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
-
-		/* Check if server is responding */
-		struct wrapper encap;
-		encap.client_id = htonl(1);
-		encap.packet_chk = htonl(PACKET_MAGIC);
-		encap.packet_cnt = htonl(pcnt--);
-		encap.data_len = 0;
-		encap.mode = PING;
-
-		fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
-
-		/* Notify server */
-		encap.client_id = htonl(1);
-		encap.packet_chk = htonl(PACKET_MAGIC);
-		encap.packet_cnt = htonl(pcnt--);
-		encap.data_len = 0;
-		encap.mode = CLIENT_HELLO;
-
-		struct handshake client_key;
-		memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
-
-		fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
-		fd_write(net_fd, (unsigned char *)&client_key, sizeof(client_key));
+		ev_io_init(&w_tun, tun_cb, tap_fd, EV_READ);
+		ev_io_start(EV_A_ &w_tun);
 	} else {
 		/* Server, set local addr */
 		int sock = set_ip(cfg.if_name, cfg.ip);
 		set_netmask(sock, cfg.if_name, cfg.ip_netmask);
 
-		/* Avoid EADDRINUSE */
-		int _opval = 1;
-		if(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&_opval, sizeof(_opval)) < 0){
-			lprint("[erro] Cannot set socket options\n");
-			goto error;
-		}
+		sock_fd = server_init(DEF_MAX_CLIENTS);
 
-		memset(&local, 0, sizeof(local));
-		local.sin_family = AF_INET;
-		local.sin_addr.s_addr = htonl(INADDR_ANY);
-		local.sin_port = htons(cfg.port);
-		if (bind(sock_fd, (struct sockaddr*)&local, sizeof(local)) < 0){
-			lprintf("[erro] Cannot bind to port %d\n", cfg.port);
-			goto error;
-		}
+		// Initialize and start a watcher to accepts client requests
+		ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);
+		ev_io_start(EV_A_ &w_accept);
 
-		if (listen(sock_fd, 5) < 0){
-			lprint("[erro] Cannot listen on socket\n");
-			goto error;
-		}
-
-		lprint("[info] Accepting connections\n");
-
-		/* Wait for request */
-		socklen_t remotelen = sizeof(remote);
-		memset(&remote, 0, remotelen);
-		if ((net_fd = accept(sock_fd, (struct sockaddr*)&remote, &remotelen)) < 0){
-			lprint("[erro] Cannot accept connection\n");
-			goto error;
-		}
-
-		lprintf("[info] Client connected from %s\n", inet_ntoa(remote.sin_addr));
+		// Initialize and start watcher to read tun interface
+		ev_io_init(&w_tun, tun_cb, tap_fd, EV_READ);
+		ev_io_start(EV_A_ &w_tun);
 	}
 
-	int maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
-	while (active) {
-		unsigned char buffer[BUFSIZE];
-		unsigned char cbuffer[crypto_box_MACBYTES + BUFSIZE];
-		unsigned short nread, nwrite;
-		fd_set rd_set;
-		struct wrapper encap;
-
-		FD_ZERO(&rd_set);
-		FD_SET(tap_fd, &rd_set);
-		FD_SET(net_fd, &rd_set);
-
-		/* Listen on fds */
-		int ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
-		if (ret < 0 && errno == EINTR){
-			continue;
-		}
-
-		if (ret < 0) {
-			lprint("[warn] No devices in list\n");
-			goto error;
-		}
-
-		/* Action on TUN */
-		if(FD_ISSET(tap_fd, &rd_set)){
-			nread = fd_read(tap_fd, (unsigned char *)buffer, BUFSIZE);
-
-			if (cfg.debug) lprintf("[dbug] Read %d bytes from tun\n", nread);
-
-			unsigned char nonce[crypto_box_NONCEBYTES];
-			randombytes_buf(nonce, crypto_box_NONCEBYTES);
-			crypto_box_easy_afternm(cbuffer, buffer, nread, nonce, sshk);
-
-			encap.client_id = htonl(1);
-			encap.packet_chk = htonl(PACKET_MAGIC);
-			encap.packet_cnt = htonl(pcnt--);
-			encap.data_len = htons(crypto_box_MACBYTES + nread);
-			encap.mode = STREAM;
-			memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
-
-			/* Write packet */
-			nwrite = fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
-			nwrite = fd_write(net_fd, (unsigned char *)cbuffer, crypto_box_MACBYTES + nread);
-
-			if (cfg.debug) lprintf("[dbug] Wrote %d bytes to socket\n", nwrite);
-		}
-
-		/* Action on socket */
-		if(FD_ISSET(net_fd, &rd_set)){
-			nread = fd_count(net_fd, (unsigned char *)&encap, sizeof(encap));
-			if(nread == 0) {
-				close(net_fd);
-				continue;
-			}
-
-			int sesscnt = ntohl(encap.packet_cnt);
-			if (cfg.debug) lprintf("[dbug] Packet count %u\n", sesscnt);
-
-			if (ntohl(encap.packet_chk) == PACKET_MAGIC) {
-				if (cfg.debug) lprintf("[dbug] Read %d bytes from socket\n", nread);
-
-				if (encap.mode == CLIENT_HELLO) {
-					struct handshake client_key;
-					nread = fd_count(net_fd, (unsigned char *)&client_key, sizeof(client_key));
-
-					unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
-					unsigned long long pk_unsigned_len;
-					if (crypto_sign_open(pk_unsigned, &pk_unsigned_len, (const unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.capk) != 0) {
-						lprintf("[erro] Client authentication mismatch\n");
-					} else {
-						lprintf("[info] Client authentication verified\n");
-					
-						unsigned char ca_fp[crypto_generichash_BYTES];
-						unsigned char cl_fp[crypto_generichash_BYTES];
-						memcpy(cl_lt_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
-						memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
-
-						crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
-
-						if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
-							lprintf("[info] Client signature verified\n");
-
-							encap.client_id = htonl(1);
-							encap.packet_chk = htonl(PACKET_MAGIC);
-							encap.packet_cnt = htonl(pcnt--);
-							encap.data_len = 0;
-							encap.mode = SERVER_HELLO;
-
-							memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
-							strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
-							strncpy(client_key.netmask, cfg.ip_netmask, 15);
-
-							fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
-							fd_write(net_fd, (unsigned char *)&client_key, sizeof(client_key));
-
-							lprintf("[info] Client %d assigned %s\n", 1, client_key.ip);
-						} else {
-							lprintf("[erro] Client signature mismatch\n");
-						}
-					}
-				} else if (encap.mode == SERVER_HELLO) {
-					struct handshake client_key;
-					nread = fd_count(net_fd, (unsigned char *)&client_key, sizeof(client_key));
-
-					unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
-					unsigned long long pk_unsigned_len;
-					if (crypto_sign_open(pk_unsigned, &pk_unsigned_len, (const unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.capk) != 0) {
-						lprintf("[erro] Server authentication mismatch\n");
-					} else {
-						lprintf("[info] Server authentication verified\n");
-					
-						unsigned char ca_fp[crypto_generichash_BYTES];
-						unsigned char cl_fp[crypto_generichash_BYTES];
-						memcpy(cl_lt_pk, pk_unsigned, crypto_box_PUBLICKEYBYTES);
-						memcpy(cl_fp, pk_unsigned+crypto_box_PUBLICKEYBYTES, crypto_generichash_BYTES);
-
-						crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
-
-						if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
-							lprintf("[info] Server signature verified\n");
-
-							unsigned char nonce[crypto_box_NONCEBYTES];
-							unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
-							randombytes_buf(nonce, crypto_box_NONCEBYTES);
-							crypto_box_keypair(st_pk, st_sk);
-
-							pcnt = PACKET_CNT;
-							crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, cl_lt_pk, cfg.sk);
-
-							encap.client_id = htonl(1);
-							encap.packet_chk = htonl(PACKET_MAGIC);
-							encap.packet_cnt = htonl(pcnt--);
-							encap.data_len = 0;
-							encap.mode = INIT_EPHEX;
-							memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
-
-							fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
-							fd_write(net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
-
-							int sock = set_ip(cfg.if_name, client_key.ip);
-							set_netmask(sock, cfg.if_name, client_key.netmask);
-
-							lprintf("[info] Assgined %s/%s\n", client_key.ip, client_key.netmask);
-						} else {
-							lprintf("[erro] Server signature mismatch\n");
-						}
-					}
-				} else if (encap.mode == INIT_EPHEX) {
-					unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
-					unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
-					nread = fd_count(net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
-
-					if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, cl_lt_pk, cfg.sk) != 0) {
-						if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
-					} else {
-						lprintf("[info] Ephemeral key exchanged\n");
-
-						unsigned char nonce[crypto_box_NONCEBYTES];
-						randombytes_buf(nonce, crypto_box_NONCEBYTES);
-						crypto_box_keypair(st_pk, st_sk);
-
-						pcnt = PACKET_CNT;
-						crypto_box_beforenm(sshk, cl_st_pk, st_sk);
-						crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, cl_lt_pk, cfg.sk);
-
-						encap.client_id = htonl(1);
-						encap.packet_chk = htonl(PACKET_MAGIC);
-						encap.packet_cnt = htonl(pcnt--);
-						encap.data_len = 0;
-						encap.mode = RESP_EPHEX;
-						memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
-
-						fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
-						fd_write(net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
-					}
-				} else if (encap.mode == RESP_EPHEX) {
-					unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
-					unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
-					nread = fd_count(net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
-
-					if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, cl_lt_pk, cfg.sk) != 0) {
-						if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
-					} else {
-						lprintf("[info] Ephemeral key exchanged\n");
-
-						crypto_box_beforenm(sshk, cl_st_pk, st_sk);
-					}
-				} else if (encap.mode == STREAM) {
-					/* Read packet */
-					nread = fd_count(net_fd, (unsigned char *)cbuffer, ntohs(encap.data_len));
-
-					if (crypto_box_open_easy_afternm(buffer, cbuffer, ntohs(encap.data_len), encap.nonce, sshk) != 0) {
-						if (cfg.debug) lprintf("[dbug] Unable to decrypt packet\n");
-					} else {
-						nwrite = fd_write(tap_fd, buffer, nread);
-
-						if (cfg.debug) lprintf("[dbug] Wrote %d bytes to tun\n", nwrite);
-					}
-				} else if (encap.mode == PING) {
-					/* Ping back */
-					encap.client_id = htonl(1);
-					encap.packet_chk = htonl(PACKET_MAGIC);
-					encap.packet_cnt = htonl(pcnt--);
-					encap.data_len = 0;
-					encap.mode = PING_BACK;
-
-					fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
-				} else if (encap.mode == PING_BACK) {
-					/* Log pingback */
-					lprintf("[info] Server pingback\n");
-				} else {
-					if (cfg.debug) lprintf("[dbug] Packet dropped\n");
-				}
-			} else {
-				if (cfg.debug) lprintf("[dbug] Packet dropped\n");
-			}
-
-			if (sesscnt == 1) {
-				lprintf("[info] Ephemeral keypair expired\n");
-
-				unsigned char nonce[crypto_box_NONCEBYTES];
-				unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
-				randombytes_buf(nonce, crypto_box_NONCEBYTES);
-				crypto_box_keypair(st_pk, st_sk);
-
-				pcnt = PACKET_CNT;
-				crypto_box_easy(ciphertext, st_pk, crypto_box_PUBLICKEYBYTES, nonce, cl_lt_pk, cfg.sk);
-
-				encap.client_id = htonl(1);
-				encap.packet_chk = htonl(PACKET_MAGIC);
-				encap.packet_cnt = htonl(pcnt--);
-				encap.data_len = 0;
-				encap.mode = INIT_EPHEX;
-				memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
-
-				fd_write(net_fd, (unsigned char *)&encap, sizeof(encap));
-				fd_write(net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
-			}
-		}
-	}
+	// Start infinite loop
+	lprint("[info] Starting events\n");
+	ev_loop(EV_A_ 0);
 
 error:
 	free(cfg.if_name);
