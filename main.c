@@ -383,13 +383,13 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					encap.mode = SERVER_HELLO;
 
 					memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
-					strncpy(client_key.ip, incr_ip(cfg.ip, 1), 15);
+					strncpy(client_key.ip, incr_ip(cfg.ip, client->index), 15);
 					strncpy(client_key.netmask, cfg.ip_netmask, 15);
 
 					send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
 					send(client->net_fd, (unsigned char *)&client_key, sizeof(client_key), 0);
 
-					lprintf("[info] Client %d assigned %s\n", 1, client_key.ip);
+					lprintf("[info] Client %d assigned %s\n", client->index, client_key.ip);
 				} else {
 					lprintf("[erro] Client signature mismatch\n");
 				}
@@ -892,7 +892,7 @@ int main(int argc, char *argv[]) {
 
 			crypto_generichash(fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 			crypto_box_keypair(pk, sk);
-			strncat((char *)pk, (char *)fp, crypto_generichash_BYTES); //TODO: memset with offset
+			memcpy(pk+crypto_box_PUBLICKEYBYTES, fp, crypto_generichash_BYTES);
 
 			printf("Sign key with CA [y/N]? ");
 			scanf("%c", &q);
