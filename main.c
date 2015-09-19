@@ -236,18 +236,26 @@ redo:
 			goto redo; //TODO
 		} else {
 			perror("read error");
+			printf("errno %d\n", errno);
 		}
 		return read;
 	}
 
 	if (read == 0) {
-		// Stop and free watchet if client socket is closing
-		lprint("[info] Client disconnected\n");
-		//ev_io_stop(EV_A_ &client->io);  //TODO: this needs to be done somewhere
 		close(fd);
-		//free(client); //TODO: this needs to be done somewhere
 		total_clients--; // Decrement total_clients count
-		lprintf("[info] %d client(s) connected\n", total_clients);
+		if (!cfg.server) {
+			lprint("[info] Server disconnected\n");
+			ev_io_stop(EV_A_ &conn_client->io);
+			free(conn_client);
+			conn_client = NULL;
+			ev_break(EV_A_ EVBREAK_ALL);
+		} else {
+			lprint("[info] Client disconnected\n");
+			//ev_io_stop(EV_A_ &client->io);  //TODO: this needs to be done somewhere
+			//free(client); //TODO: this needs to be done somewhere
+			lprintf("[info] %d client(s) connected\n", total_clients);
+		}
 	}
 	return read;
 }
@@ -318,6 +326,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 	struct sock_ev_client *client = (struct sock_ev_client *)watcher;
 
 	read = fd_read(client->fd, (unsigned char *)&encap, sizeof(encap));
+	if (read <= 0)
+		return;
 
 	int sesscnt = ntohl(encap.packet_cnt);
 	if (cfg.debug) lprintf("[dbug] Packet count %u\n", sesscnt);
@@ -601,6 +611,7 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 int client_connect(EV_P_ char *remote_addr) {
 	int sd;
  	struct sockaddr_in remote;
+ 	struct wrapper encap;
  	conn_client = (struct sock_ev_client *)malloc(sizeof(struct sock_ev_client));
 
  	// Create client socket
@@ -621,7 +632,6 @@ int client_connect(EV_P_ char *remote_addr) {
 
 	// initialize the send callback, but wait to start until there is data to write
 	ev_io_init(&conn_client->io, read_cb, sd, EV_READ);
-	//ev_io_init(&conn_client->io, send_cb, sd, EV_READ);
 	ev_io_start(EV_A_ &conn_client->io);
 
 	memset(&remote, 0, sizeof(remote));
@@ -638,7 +648,7 @@ int client_connect(EV_P_ char *remote_addr) {
 	}
 	lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
 
-	struct wrapper encap;
+retry:
 	encap.client_id = htonl(1);
 	encap.packet_chk = htonl(PACKET_MAGIC);
 	encap.packet_cnt = htonl(pcnt--);
@@ -646,8 +656,8 @@ int client_connect(EV_P_ char *remote_addr) {
 	encap.mode = PING;
 
 	if (send(conn_client->fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
-		perror("send");
-		return -1;
+		perror("send PING");
+		goto retry;
 	}
 
 	encap.client_id = htonl(1);
@@ -660,12 +670,12 @@ int client_connect(EV_P_ char *remote_addr) {
 	memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
 	if (send(conn_client->fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
-		perror("send");
+		perror("send encap");
 		return -1;
 	}
 
 	if (send(conn_client->fd, (unsigned char *)&client_key, sizeof(client_key), 0)<0){
-		perror("send");
+		perror("send key");
 		return -1;
 	}
 
@@ -712,7 +722,7 @@ int main(int argc, char *argv[]) {
 	int flags = IFF_TUN;
 	char remote_ip[ADDRSIZE];
 	char config_file[NAME_MAX];
-	int tap_fd, sock_fd, option, config = 0;
+	int sock_fd, option, config = 0;
 	loop = EV_DEFAULT;
 	struct ev_io w_accept, w_tun;
 
@@ -921,19 +931,16 @@ int main(int argc, char *argv[]) {
 #endif
 
 	/* Initialize tun/tap interface */
-	if ((tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI))<0) {
-		lprintf("[erro] Cannot connect to %s\n", cfg.if_name);
-		goto error;
-	}
-	_tmp_tap_fd = tap_fd;
+	_tmp_tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI);
+
+	// Initialize and start watcher to read tun interface
+	ev_io_init(&w_tun, tun_cb, _tmp_tap_fd, EV_READ);
+	ev_io_start(EV_A_ &w_tun);
 
 	/* Client or server mode */
 	if (!cfg.server) {
 		/* Assign the destination address */
 		client_connect(EV_A_ remote_ip);
-
-		ev_io_init(&w_tun, tun_cb, tap_fd, EV_READ);
-		ev_io_start(EV_A_ &w_tun);
 	} else {
 		/* Server, set local addr */
 		int sock = set_ip(cfg.if_name, cfg.ip);
@@ -944,10 +951,6 @@ int main(int argc, char *argv[]) {
 		// Initialize and start a watcher to accepts client requests
 		ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);
 		ev_io_start(EV_A_ &w_accept);
-
-		// Initialize and start watcher to read tun interface
-		ev_io_init(&w_tun, tun_cb, tap_fd, EV_READ);
-		ev_io_start(EV_A_ &w_tun);
 	}
 
 	// Start infinite loop
@@ -955,6 +958,8 @@ int main(int argc, char *argv[]) {
 	ev_loop(EV_A_ 0);
 
 error:
+	ev_loop_destroy(loop);
+
 	free(cfg.if_name);
 	free(cfg.ip);
 	free(cfg.ip_netmask);
