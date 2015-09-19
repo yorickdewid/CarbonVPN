@@ -226,10 +226,10 @@ char *incr_ip(char *ip_addr, unsigned char increment) {
 	return ip;
 }
 
-int fd_read(int fd, unsigned char *buf, int n){
+int fd_read(struct sock_ev_client *client, unsigned char *buf, int n){
 	int read;
 redo:
-	read = recv(fd, buf, n, 0);
+	read = recv(client->net_fd, buf, n, 0);
 	if (read < 0) {
 		if (EAGAIN == errno) {
 			goto redo; //TODO
@@ -241,36 +241,35 @@ redo:
 	}
 
 	if (read == 0) {
-		close(fd);
-		total_clients--; // Decrement total_clients count
+		close(client->net_fd);
+		total_clients--;
+
 		if (!cfg.server) {
-			lprint("[info] Server disconnected\n");
-			ev_io_stop(EV_A_ &conn_client->io);
-			free(conn_client);
-			conn_client = NULL;
+			lprintf("[info] [client %d] Server disconnected\n", client->index);
+			
 			ev_break(EV_A_ EVBREAK_ALL);
 		} else {
-			int i;
-			struct sock_ev_client *client = NULL;
-			for (i=0; i<vector_clients.size; ++i) {
-				client = (struct sock_ev_client *)vector_get(&vector_clients, i);
-				if (!client)
-					continue;
-				if (client->net_fd == fd) {
-					sodium_memzero(client->sshk, sizeof(client->sshk));
-					sodium_memzero(client->st_sk, crypto_box_SECRETKEYBYTES);
-
-					ev_io_stop(EV_A_ &client->io);
-					lprintf("[info] Client %d removed\n", client->index);
-
-					free(client);
-					vector_clients.data[i] = NULL;
-				}
-			}
-
-			lprint("[info] Client disconnected\n");
+			lprintf("[info] [client %d] Disconnected\n", client->index);
 			lprintf("[info] %d client(s) connected\n", total_clients);
 		}
+		ev_io_stop(EV_A_ &client->io);
+
+		sodium_memzero(client->sshk, sizeof(client->sshk));
+		sodium_memzero(client->st_sk, crypto_box_SECRETKEYBYTES);
+
+		int i;
+		struct sock_ev_client *vclient = NULL;
+		for (i=0; i<vector_clients.size; ++i) {
+			vclient = (struct sock_ev_client *)vector_get(&vector_clients, i);
+			if (!vclient)
+				continue;
+
+			if (vclient->index == client->index) {
+				vector_clients.data[i] = NULL;
+			}
+		}
+
+		free(client);
 	}
 	return read;
 }
@@ -340,31 +339,31 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 
 	struct sock_ev_client *client = (struct sock_ev_client *)watcher;
 
-	read = fd_read(client->net_fd, (unsigned char *)&encap, sizeof(encap));
+	read = fd_read(client, (unsigned char *)&encap, sizeof(encap));
 	if (read <= 0)
 		return;
 
 	int sesscnt = ntohl(encap.packet_cnt);
-	if (cfg.debug) lprintf("[dbug] Packet count %u\n", sesscnt);
+	if (cfg.debug) lprintf("[dbug] [client %d] Packet count %u\n", client->index, sesscnt);
 
 	if (ntohl(encap.packet_chk) != PACKET_MAGIC) {
-		if (cfg.debug) lprintf("[dbug] Packet dropped\n");
+		if (cfg.debug) lprintf("[dbug] [client %d] Packet dropped\n", client->index);
 		return;
 	}
 
-	if (cfg.debug) lprintf("[dbug] Read %d bytes from socket\n", read);
+	if (cfg.debug) lprintf("[dbug] [client %d] Read %d bytes from socket\n", client->index, read);
 
 	switch (encap.mode) {
 		case CLIENT_HELLO: {
 			struct handshake client_key;
-			read = fd_read(client->net_fd, (unsigned char *)&client_key, sizeof(client_key));
+			read = fd_read(client, (unsigned char *)&client_key, sizeof(client_key));
 
 			unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 			unsigned long long pk_unsigned_len;
 			if (crypto_sign_open(pk_unsigned, &pk_unsigned_len, (const unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.capk) != 0) {
-				lprintf("[erro] Client authentication mismatch\n");
+				lprintf("[erro] [client %d] Authentication mismatch\n", client->index);
 			} else {
-				lprintf("[info] Client authentication verified\n");
+				lprintf("[info] [client %d] Authentication verified\n", client->index);
 			
 				unsigned char ca_fp[crypto_generichash_BYTES];
 				unsigned char cl_fp[crypto_generichash_BYTES];
@@ -374,7 +373,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 				crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 
 				if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
-					lprintf("[info] Client signature verified\n");
+					lprintf("[info] [client %d] Signature verified\n", client->index);
 
 					encap.client_id = htonl(1);
 					encap.packet_chk = htonl(PACKET_MAGIC);
@@ -389,23 +388,23 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
 					send(client->net_fd, (unsigned char *)&client_key, sizeof(client_key), 0);
 
-					lprintf("[info] Client %d assigned %s\n", client->index, client_key.ip);
+					lprintf("[info] [client %d] Assigned %s\n", client->index, client_key.ip);
 				} else {
-					lprintf("[erro] Client signature mismatch\n");
+					lprintf("[erro] [client %d] Signature mismatch\n", client->index);
 				}
 			}
 			break;
 		}
 		case SERVER_HELLO: {
 			struct handshake client_key;
-			read = fd_read(client->net_fd, (unsigned char *)&client_key, sizeof(client_key));
+			read = fd_read(client, (unsigned char *)&client_key, sizeof(client_key));
 
 			unsigned char pk_unsigned[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
 			unsigned long long pk_unsigned_len;
 			if (crypto_sign_open(pk_unsigned, &pk_unsigned_len, (const unsigned char *)client_key.pubkey, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.capk) != 0) {
-				lprintf("[erro] Server authentication mismatch\n");
+				lprintf("[erro] [client %d] Server authentication mismatch\n", client->index);
 			} else {
-				lprintf("[info] Server authentication verified\n");
+				lprintf("[info] [client %d] Server authentication verified\n", client->index);
 			
 				unsigned char ca_fp[crypto_generichash_BYTES];
 				unsigned char cl_fp[crypto_generichash_BYTES];
@@ -415,7 +414,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 				crypto_generichash(ca_fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
 
 				if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
-					lprintf("[info] Server signature verified\n");
+					lprintf("[info] [client %d] Server signature verified\n", client->index);
 
 					unsigned char nonce[crypto_box_NONCEBYTES];
 					unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
@@ -438,9 +437,9 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					int sock = set_ip(cfg.if_name, client_key.ip);
 					set_netmask(sock, cfg.if_name, client_key.netmask);
 
-					lprintf("[info] Assgined %s/%s\n", client_key.ip, client_key.netmask);
+					lprintf("[info] [client %d] Assgined %s/%s\n", client->index, client_key.ip, client_key.netmask);
 				} else {
-					lprintf("[erro] Server signature mismatch\n");
+					lprintf("[erro] [client %d] Server signature mismatch\n", client->index);
 				}
 			}
 			break;
@@ -448,12 +447,12 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		case INIT_EPHEX: {
 			unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
 			unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
-			read = fd_read(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
+			read = fd_read(client, (unsigned char *)&ciphertext, sizeof(ciphertext));
 
 			if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, client->cl_lt_pk, cfg.sk) != 0) {
-				if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
+				if (cfg.debug) lprintf("[dbug] [client %d] Ephemeral key exchange failed\n", client->index);
 			} else {
-				lprintf("[info] Ephemeral key exchanged\n");
+				lprintf("[info] [client %d] Ephemeral key exchanged\n", client->index);
 
 				unsigned char nonce[crypto_box_NONCEBYTES];
 				randombytes_buf(nonce, crypto_box_NONCEBYTES);
@@ -478,31 +477,31 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		case RESP_EPHEX: {
 			unsigned char cl_st_pk[crypto_box_PUBLICKEYBYTES];
 			unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
-			read = fd_read(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext));
+			read = fd_read(client, (unsigned char *)&ciphertext, sizeof(ciphertext));
 
 			if (crypto_box_open_easy(cl_st_pk, ciphertext, crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES, encap.nonce, client->cl_lt_pk, cfg.sk) != 0) {
-				if (cfg.debug) lprintf("[dbug] Ephemeral key exchange failed\n");
+				if (cfg.debug) lprintf("[dbug] [client %d] Ephemeral key exchange failed\n", client->index);
 			} else {
-				lprintf("[info] Ephemeral key exchanged\n");
+				lprintf("[info] [client %d] Ephemeral key exchanged\n", client->index);
 
 				crypto_box_beforenm(client->sshk, cl_st_pk, client->st_sk);
 			}
 			break;
 		}
 		case STREAM: {
-			read = fd_read(client->net_fd, (unsigned char *)&cbuffer, ntohs(encap.data_len));
+			read = fd_read(client, (unsigned char *)&cbuffer, ntohs(encap.data_len));
 
 			if (crypto_box_open_easy_afternm(buffer, cbuffer, ntohs(encap.data_len), encap.nonce, client->sshk) != 0) {
-				if (cfg.debug) lprintf("[dbug] Unable to decrypt packet\n");
+				if (cfg.debug) lprintf("[dbug] [client %d] Unable to decrypt packet\n", client->index);
 			} else {
 				int nwrite;
 
 				if((nwrite = write(tap_fd, buffer, read))<0){
-					lprint("[warn] Cannot write device\n");
+					lprintf("[warn] [client %d] Cannot write device\n", client->index);
 					return;
 				}
 
-				if (cfg.debug) lprintf("[dbug] Wrote %d bytes to tun\n", nwrite);
+				if (cfg.debug) lprintf("[dbug] [client %d] Wrote %d bytes to tun\n", client->index, nwrite);
 			}
 			break;
 		}
@@ -516,15 +515,15 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
 			break;
 		case PING_BACK:
-			lprintf("[info] Server pingback\n");
+			lprintf("[info] [client %d] Server pingback\n", client->index);
 			break;
 		default:
-			if (cfg.debug) lprintf("[dbug] Packet dropped\n");
+			if (cfg.debug) lprintf("[dbug] [client %d] Packet dropped\n", client->index);
 
 	}
 
 	if (sesscnt == 1) {
-		lprintf("[info] Ephemeral keypair expired\n");
+		lprintf("[info] [client %d] Ephemeral keypair expired\n", client->index);
 
 		unsigned char nonce[crypto_box_NONCEBYTES];
 		unsigned char ciphertext[crypto_box_MACBYTES + crypto_box_PUBLICKEYBYTES];
