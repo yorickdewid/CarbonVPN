@@ -257,9 +257,14 @@ redo:
 			struct sock_ev_client *client = NULL;
 			for (i=0; i<vector_clients.size; ++i) { //TODO
 				client = (struct sock_ev_client *)vector_get(&vector_clients, i);
-				ev_io_stop(EV_A_ &client->io);
-				lprintf("[info] Client %d removed\n", client->index);
-				free(client);
+				if (!client)
+					continue;
+				if (client->fd == fd) {
+					ev_io_stop(EV_A_ &client->io);
+					lprintf("[info] Client %d removed\n", client->index);
+					free(client);
+					vector_clients.data[i] = NULL;
+				}
 			}
 
 			lprint("[info] Client disconnected\n");
