@@ -253,9 +253,16 @@ redo:
 			conn_client = NULL;
 			ev_break(EV_A_ EVBREAK_ALL);
 		} else {
+			int i;
+			struct sock_ev_client *client = NULL;
+			for (i=0; i<vector_clients.size; ++i) { //TODO
+				client = (struct sock_ev_client *)vector_get(&vector_clients, i);
+				ev_io_stop(EV_A_ &client->io);
+				lprintf("[info] Client %d removed\n", client->index);
+				free(client);
+			}
+
 			lprint("[info] Client disconnected\n");
-			//ev_io_stop(EV_A_ &client->io);  //TODO: this needs to be done somewhere
-			//free(client); //TODO: this needs to be done somewhere
 			lprintf("[info] %d client(s) connected\n", total_clients);
 		}
 	}
@@ -611,6 +618,8 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 	client->index = ++total_clients; // Increment total_clients count
 	lprint("[info] Successfully connected with client\n");
 	lprintf("[info] %d client(s) connected\n", total_clients);
+
+	vector_append(&vector_clients, (void *)client);
 
 	// Initialize and start watcher to read client requests
 	ev_io_init(&client->io, read_cb, sd, EV_READ);
