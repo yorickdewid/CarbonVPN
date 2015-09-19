@@ -20,6 +20,7 @@
 #include "endian.h"
 #include "logger.h"
 #include "conf.h"
+#include "vector.h"
 #include "util.h"
 
 #define BUFSIZE				2048
@@ -37,6 +38,7 @@ EV_P;
 const static unsigned char version[] = "CarbonVPN 0.2 - See Github";
 static volatile int active = 1;
 static int total_clients = 0;
+vector_t vector_clients;
 
 //TMP - this will be in the client struct {
 int _tmp_tap_fd, _tmp_sock_fd;
@@ -230,7 +232,7 @@ char *incr_ip(char *ip_addr, unsigned char increment) {
 int fd_read(int fd, unsigned char *buf, int n){
 	int read;
 redo:
-	read = recv(fd, buf, n, MSG_WAITALL);
+	read = recv(fd, buf, n, 0);
 	if (read < 0) {
 		if (EAGAIN == errno) {
 			goto redo; //TODO
@@ -526,8 +528,15 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		encap.mode = INIT_EPHEX;
 		memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-		send(client->fd, (unsigned char *)&encap, sizeof(encap), 0);
-		send(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
+		if (send(client->fd, (unsigned char *)&encap, sizeof(encap), 0)<0) {
+			perror("send");
+			return;
+		}
+
+		if (send(client->fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0)<0) {
+			perror("send");
+			return;
+		}
 	}
 }
 
@@ -737,11 +746,14 @@ int main(int argc, char *argv[]) {
 	cfg.debug = 0;
 	cfg.max_conn = DEF_MAX_CLIENTS;
 
-	/* Start log */
+	// Start log
 	start_log();
 
-	/* Initialize NaCl */
+	// Initialize NaCl
 	sodium_init();
+
+	// Initialize client pool
+	vector_init(&vector_clients);
 
 	/* Check command line options */
 	while ((option = getopt(argc, argv, "f:i:c:p:ahv"))>0){
@@ -966,6 +978,8 @@ error:
 
 	sodium_memzero(sshk, sizeof(sshk));
 	sodium_memzero(st_sk, crypto_box_SECRETKEYBYTES);
+
+	vector_free(&vector_clients);
 
 	stop_log();
 
