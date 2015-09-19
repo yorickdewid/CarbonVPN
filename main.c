@@ -35,7 +35,7 @@
 #define PACKET_CNT			1024
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.3 - See Github";
+const static unsigned char version[] = "CarbonVPN 0.4 - See Github";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
@@ -72,7 +72,6 @@ enum mode {
 
 struct sock_ev_client {
 	ev_io io;
-	//int tun_fd;
 	int net_fd;
 	int index;
 	unsigned int packet_cnt;
@@ -236,7 +235,6 @@ redo:
 			goto redo; //TODO
 		} else {
 			perror("read error");
-			printf("errno %d\n", errno);
 		}
 		return read;
 	}
@@ -272,6 +270,17 @@ redo:
 
 		free(client);
 	}
+	return read;
+}
+
+int fd_write(int fd, unsigned char *buf, int n) {
+	int read;
+
+	read = send(fd, buf, n, 0);
+	if (read < 0) {
+		perror("send");
+	}
+
 	return read;
 }
 
@@ -406,8 +415,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					strncpy(client_key.ip, incr_ip(cfg.ip, client->index), 15);
 					strncpy(client_key.netmask, cfg.ip_netmask, 15);
 
-					send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
-					send(client->net_fd, (unsigned char *)&client_key, sizeof(client_key), 0);
+					fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
+					fd_write(client->net_fd, (unsigned char *)&client_key, sizeof(client_key));
 
 					lprintf("[info] [client %d] Assigned %s\n", client->index, client_key.ip);
 				} else {
@@ -452,8 +461,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					encap.mode = INIT_EPHEX;
 					memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-					send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
-					send(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
+					fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
+					fd_write(client->net_fd, ciphertext, sizeof(ciphertext));
 
 					int sock = set_ip(cfg.if_name, client_key.ip);
 					set_netmask(sock, cfg.if_name, client_key.netmask);
@@ -490,8 +499,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 				encap.mode = RESP_EPHEX;
 				memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-				send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
-				send(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0);
+				fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
+				fd_write(client->net_fd, ciphertext, sizeof(ciphertext));
 			}
 			break;
 		}
@@ -526,15 +535,16 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			}
 			break;
 		}
-		case PING:
+		case PING: {
 			encap.client_id = htonl(1);
 			encap.packet_chk = htonl(PACKET_MAGIC);
 			encap.packet_cnt = htonl(client->packet_cnt--);
 			encap.data_len = 0;
 			encap.mode = PING_BACK;
 
-			send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0);
+			fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
 			break;
+		}
 		case PING_BACK:
 			lprintf("[info] [client %d] Server pingback\n", client->index);
 			break;
@@ -561,15 +571,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		encap.mode = INIT_EPHEX;
 		memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-		if (send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0)<0) {
-			perror("send");
-			return;
-		}
-
-		if (send(client->net_fd, (unsigned char *)&ciphertext, sizeof(ciphertext), 0)<0) {
-			perror("send");
-			return;
-		}
+		fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
+		fd_write(client->net_fd, ciphertext, sizeof(ciphertext));
 	}
 }
 
@@ -605,16 +608,8 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 		encap.mode = STREAM;
 		memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-		/* Write packet */
-		if (send(client->net_fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
-			perror("send");
-			return;
-		}
-
-		if (send(client->net_fd, cbuffer, crypto_box_MACBYTES + nread, 0)<0) {
-			perror("send2");
-			return;
-		}
+		fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
+		fd_write(client->net_fd, cbuffer, crypto_box_MACBYTES + nread);
 
 		if (cfg.debug) lprintf("[dbug] Wrote %d bytes to socket\n", crypto_box_MACBYTES + nread);
 	}
@@ -709,8 +704,8 @@ retry:
 	encap.data_len = 0;
 	encap.mode = PING;
 
-	if (send(conn_client->net_fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
-		perror("send PING");
+	if (fd_write(conn_client->net_fd, (unsigned char *)&encap, sizeof(encap))<0) {
+		lprint("[warn] Retry pingback\n");
 		goto retry;
 	}
 
@@ -723,15 +718,8 @@ retry:
 	struct handshake client_key;
 	memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
-	if (send(conn_client->net_fd, (unsigned char *)&encap, sizeof(encap), 0)<0){
-		perror("send encap");
-		return -1;
-	}
-
-	if (send(conn_client->net_fd, (unsigned char *)&client_key, sizeof(client_key), 0)<0){
-		perror("send key");
-		return -1;
-	}
+	fd_write(conn_client->net_fd, (unsigned char *)&encap, sizeof(encap));
+	fd_write(conn_client->net_fd, (unsigned char *)&client_key, sizeof(client_key));
 
   	return sd;
 }
@@ -772,6 +760,107 @@ int server_init(int max_queue) {
 	return sd;
 }
 
+/* Generate new CA */
+void cert_genca() {
+	unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+	unsigned char sk[crypto_sign_SECRETKEYBYTES];
+	unsigned char cert[CERTSIZE];
+	unsigned char cert_signed[crypto_sign_BYTES + CERTSIZE];
+	unsigned char fp[crypto_generichash_BYTES];
+	unsigned long long cert_signed_len;
+
+	randombytes_buf(cert, CERTSIZE);
+	crypto_sign_keypair(pk, sk);
+	crypto_sign(cert_signed, &cert_signed_len, cert, CERTSIZE, sk);
+	crypto_generichash(fp, crypto_generichash_BYTES, cert_signed, cert_signed_len, pk, crypto_sign_PUBLICKEYBYTES);
+
+	if (cfg.debug) {
+		printf("Generating CA with %s-%s-SHA256\n", randombytes_implementation_name(), crypto_sign_primitive());
+		printf("Private certificate: \t");
+		print_hex(cert, CERTSIZE);
+		printf("Public key: \t\t");
+		print_hex(pk, crypto_sign_PUBLICKEYBYTES);
+		printf("Private key: \t\t");
+		print_hex(sk, crypto_sign_SECRETKEYBYTES);
+		printf("Public certificate: \t");
+		print_hex(cert_signed, cert_signed_len);
+		printf("Fingerprint: \t\t");
+		print_hex(fp, crypto_generichash_BYTES);
+		putchar('\n');
+	}
+
+	puts("Add the following lines the config file:");
+	printf("cacert = ");
+	print_hex(cert_signed, cert_signed_len);
+	printf("capublickey = ");
+	print_hex(pk, crypto_sign_PUBLICKEYBYTES);
+	printf("caprivatekey = ");
+	print_hex(sk, crypto_sign_SECRETKEYBYTES);
+
+	sodium_memzero(cert, sizeof(cert));
+	sodium_memzero(sk, sizeof(sk));
+}
+
+/* Generate new client keypair */
+void cert_gencert() {
+	unsigned char pk[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
+	unsigned char sk[crypto_box_SECRETKEYBYTES];
+	unsigned char fp[crypto_generichash_BYTES];
+	unsigned char pk_signed[crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
+	unsigned long long pk_signed_len;
+	char q;
+
+	if (isnull(cfg.cacert, crypto_sign_BYTES + CERTSIZE)) {
+		lprintf("[erro] No CA certificate in config, see genca\n");
+		return;
+	}
+
+	if (isnull(cfg.capk, crypto_sign_PUBLICKEYBYTES)) {
+		lprintf("[erro] No CA public key in config, see genca\n");
+		return;
+	}
+
+	if (isnull(cfg.cask, crypto_sign_SECRETKEYBYTES)) {
+		lprintf("[erro] No CA private key in config, see genca\n");
+		return;
+	}
+
+	crypto_generichash(fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
+	crypto_box_keypair(pk, sk);
+	memcpy(pk+crypto_box_PUBLICKEYBYTES, fp, crypto_generichash_BYTES);
+
+	printf("Public key: ");
+	print_hex(pk, crypto_box_PUBLICKEYBYTES);
+	printf("Sign key with CA [y/N]? ");
+	scanf("%c", &q);
+	if (q != 'Y' && q != 'y') {
+		return;
+	}
+
+	crypto_sign(pk_signed, &pk_signed_len, pk, crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.cask);
+
+	if (cfg.debug) {
+		printf("Generating keypair with %s\n", crypto_box_primitive());
+		printf("Appended public key: \t");
+		print_hex(pk, crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
+		printf("Private key: \t\t");
+		print_hex(sk, crypto_box_SECRETKEYBYTES);
+		printf("Fingerprint: \t\t");
+		print_hex(fp, crypto_generichash_BYTES);
+		printf("Signed public key: \t");
+		print_hex(pk_signed, pk_signed_len);
+		putchar('\n');
+	}
+
+	puts("Add the following lines the config file:");
+	printf("publickey = ");
+	print_hex(pk_signed, pk_signed_len);
+	printf("privatekey = ");
+	print_hex(sk, crypto_box_SECRETKEYBYTES);
+
+	sodium_memzero(sk, sizeof(sk));
+}
+
 int main(int argc, char *argv[]) {
 	int flags = IFF_TUN;
 	char remote_ip[ADDRSIZE];
@@ -794,9 +883,6 @@ int main(int argc, char *argv[]) {
 
 	// Initialize NaCl
 	sodium_init();
-
-	// Initialize client pool
-	vector_init(&vector_clients);
 
 	/* Check command line options */
 	while ((option = getopt(argc, argv, "f:i:c:p:ahv"))>0){
@@ -846,102 +932,10 @@ int main(int argc, char *argv[]) {
 
 	if (argc > 0) {
 		if (!strcmp(argv[0], "genca")) {
-			/* Generate new CA */
-			unsigned char pk[crypto_sign_PUBLICKEYBYTES];
-			unsigned char sk[crypto_sign_SECRETKEYBYTES];
-			unsigned char cert[CERTSIZE];
-			unsigned char cert_signed[crypto_sign_BYTES + CERTSIZE];
-			unsigned char fp[crypto_generichash_BYTES];
-			unsigned long long cert_signed_len;
-
-			randombytes_buf(cert, CERTSIZE);
-			crypto_sign_keypair(pk, sk);
-			crypto_sign(cert_signed, &cert_signed_len, cert, CERTSIZE, sk);
-			crypto_generichash(fp, crypto_generichash_BYTES, cert_signed, cert_signed_len, pk, crypto_sign_PUBLICKEYBYTES);
-
-			if (cfg.debug) {
-				printf("Generating CA with %s-%s-SHA256\n", randombytes_implementation_name(), crypto_sign_primitive());
-				printf("Private certificate: \t");
-				print_hex(cert, CERTSIZE);
-				printf("Public key: \t\t");
-				print_hex(pk, crypto_sign_PUBLICKEYBYTES);
-				printf("Private key: \t\t");
-				print_hex(sk, crypto_sign_SECRETKEYBYTES);
-				printf("Public certificate: \t");
-				print_hex(cert_signed, cert_signed_len);
-				printf("Fingerprint: \t\t");
-				print_hex(fp, crypto_generichash_BYTES);
-				putchar('\n');
-			}
-
-			puts("Add the following lines the config file:");
-			printf("cacert = ");
-			print_hex(cert_signed, cert_signed_len);
-			printf("capublickey = ");
-			print_hex(pk, crypto_sign_PUBLICKEYBYTES);
-			printf("caprivatekey = ");
-			print_hex(sk, crypto_sign_SECRETKEYBYTES);
-
-			sodium_memzero(cert, sizeof(cert));
-			sodium_memzero(sk, sizeof(sk));
-
+			cert_genca();
 			goto cleanup;
 		} else if (!strcmp(argv[0], "gencert")) {
-			/* Generate new client keypair */
-			unsigned char pk[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
-			unsigned char sk[crypto_box_SECRETKEYBYTES];
-			unsigned char fp[crypto_generichash_BYTES];
-			unsigned char pk_signed[crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
-			unsigned long long pk_signed_len;
-			char q;
-
-			if (isnull(cfg.cacert, crypto_sign_BYTES + CERTSIZE)) {
-				lprintf("[erro] No CA certificate in config, see genca\n");
-				goto cleanup;
-			}
-
-			if (isnull(cfg.capk, crypto_sign_PUBLICKEYBYTES)) {
-				lprintf("[erro] No CA public key in config, see genca\n");
-				goto cleanup;
-			}
-
-			if (isnull(cfg.cask, crypto_sign_SECRETKEYBYTES)) {
-				lprintf("[erro] No CA private key in config, see genca\n");
-				goto cleanup;
-			}
-
-			crypto_generichash(fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
-			crypto_box_keypair(pk, sk);
-			memcpy(pk+crypto_box_PUBLICKEYBYTES, fp, crypto_generichash_BYTES);
-
-			printf("Sign key with CA [y/N]? ");
-			scanf("%c", &q);
-			if (q != 'Y' && q != 'y')
-				goto cleanup;
-
-			crypto_sign(pk_signed, &pk_signed_len, pk, crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.cask);
-
-			if (cfg.debug) {
-				printf("Generating keypair with %s\n", crypto_box_primitive());
-				printf("Appended public key: \t");
-				print_hex(pk, crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
-				printf("Private key: \t\t");
-				print_hex(sk, crypto_box_SECRETKEYBYTES);
-				printf("Fingerprint: \t\t");
-				print_hex(fp, crypto_generichash_BYTES);
-				printf("Signed public key: \t");
-				print_hex(pk_signed, pk_signed_len);
-				putchar('\n');
-			}
-
-			puts("Add the following lines the config file:");
-			printf("publickey = ");
-			print_hex(pk_signed, pk_signed_len);
-			printf("privatekey = ");
-			print_hex(sk, crypto_box_SECRETKEYBYTES);
-
-			sodium_memzero(sk, sizeof(sk));
-
+			cert_gencert();
 			goto cleanup;
 		} else {
 			fprintf(stderr, "Unknown command %s\n", argv[0]);
@@ -985,6 +979,9 @@ int main(int argc, char *argv[]) {
 		goto cleanup;
 	}
 
+	// Initialize client pool
+	vector_init(&vector_clients, cfg.max_conn);
+
 	/* Initialize tun/tap interface */
 	tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI);
 
@@ -1001,7 +998,7 @@ int main(int argc, char *argv[]) {
 		int sock = set_ip(cfg.if_name, cfg.ip);
 		set_netmask(sock, cfg.if_name, cfg.ip_netmask);
 
-		sock_fd = server_init(DEF_MAX_CLIENTS);
+		sock_fd = server_init(cfg.max_conn);
 
 		// Initialize and start a watcher to accepts client requests
 		ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);

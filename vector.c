@@ -2,10 +2,10 @@
 #include <stdlib.h>
 #include "vector.h"
 
-void vector_init(vector_t *vector) {
+void vector_init(vector_t *vector, int capacity) {
 	// initialize size and capacity
 	vector->size = 0;
-	vector->capacity = VECTOR_INITIAL_CAPACITY;
+	vector->capacity = capacity;
 
 	// allocate memory for vector->data
 	vector->data = malloc(sizeof(void *) * vector->capacity);
