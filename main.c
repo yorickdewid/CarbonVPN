@@ -36,10 +36,10 @@
 
 EV_P;
 const static unsigned char version[] = "CarbonVPN 0.3 - See Github";
-static volatile int active = 1;
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
+struct ev_io w_accept, w_tun;
 
 static struct sock_ev_client *conn_client = NULL;
 
@@ -228,6 +228,7 @@ char *incr_ip(char *ip_addr, unsigned char increment) {
 
 int fd_read(struct sock_ev_client *client, unsigned char *buf, int n){
 	int read;
+
 redo:
 	read = recv(client->net_fd, buf, n, 0);
 	if (read < 0) {
@@ -276,7 +277,27 @@ redo:
 
 void sig_handler(int dummy) {
 	lprint("[info] Shutdown daemon\n");
-	active = 0;
+
+	int i;
+	struct sock_ev_client *client = NULL;
+	for (i=0; i<vector_clients.size; ++i) {
+		client = (struct sock_ev_client *)vector_get(&vector_clients, i);
+		if (!client)
+			continue;
+
+		ev_io_stop(EV_A_ &client->io);
+
+		close(client->net_fd);
+
+		sodium_memzero(client->sshk, sizeof(client->sshk));
+		sodium_memzero(client->st_sk, crypto_box_SECRETKEYBYTES);
+
+		free(client);
+	}
+
+	ev_io_stop(EV_A_ &w_accept);
+	ev_io_stop(EV_A_ &w_tun);
+	ev_break(EV_A_ EVBREAK_ALL);
 }
 
 void usage(char *name) {
@@ -757,7 +778,6 @@ int main(int argc, char *argv[]) {
 	char config_file[NAME_MAX];
 	int sock_fd, option, config = 0;
 	loop = EV_DEFAULT;
-	struct ev_io w_accept, w_tun;
 
 	memset(&cfg, 0, sizeof(config_t));
 	
@@ -808,7 +828,7 @@ int main(int argc, char *argv[]) {
 			default:
 				fprintf(stderr, "Unknown option %c\n", option);
 				usage(argv[0]);
-				return 1;
+				goto cleanup;
 			}
 	}
 
@@ -820,7 +840,7 @@ int main(int argc, char *argv[]) {
 		lprint("[info] Loading config from file\n");
 		if (conf_parse(config_file, parse_config, &cfg) < 0) {
 			lprintf("[erro] Cannot open %s\n", config_file);
-			goto error;
+			goto cleanup;
 		}
 	}
 
@@ -864,7 +884,8 @@ int main(int argc, char *argv[]) {
 
 			sodium_memzero(cert, sizeof(cert));
 			sodium_memzero(sk, sizeof(sk));
-			return 0;
+
+			goto cleanup;
 		} else if (!strcmp(argv[0], "gencert")) {
 			/* Generate new client keypair */
 			unsigned char pk[crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES];
@@ -876,17 +897,17 @@ int main(int argc, char *argv[]) {
 
 			if (isnull(cfg.cacert, crypto_sign_BYTES + CERTSIZE)) {
 				lprintf("[erro] No CA certificate in config, see genca\n");
-				return 1;
+				goto cleanup;
 			}
 
 			if (isnull(cfg.capk, crypto_sign_PUBLICKEYBYTES)) {
 				lprintf("[erro] No CA public key in config, see genca\n");
-				return 1;
+				goto cleanup;
 			}
 
 			if (isnull(cfg.cask, crypto_sign_SECRETKEYBYTES)) {
 				lprintf("[erro] No CA private key in config, see genca\n");
-				return 1;
+				goto cleanup;
 			}
 
 			crypto_generichash(fp, crypto_generichash_BYTES, cfg.cacert, (crypto_sign_BYTES + CERTSIZE), cfg.capk, crypto_sign_PUBLICKEYBYTES);
@@ -896,7 +917,7 @@ int main(int argc, char *argv[]) {
 			printf("Sign key with CA [y/N]? ");
 			scanf("%c", &q);
 			if (q != 'Y' && q != 'y')
-				return 1;
+				goto cleanup;
 
 			crypto_sign(pk_signed, &pk_signed_len, pk, crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES, cfg.cask);
 
@@ -920,47 +941,48 @@ int main(int argc, char *argv[]) {
 			print_hex(sk, crypto_box_SECRETKEYBYTES);
 
 			sodium_memzero(sk, sizeof(sk));
-			return 0;
+
+			goto cleanup;
 		} else {
 			fprintf(stderr, "Unknown command %s\n", argv[0]);
-			return 1;
+			goto cleanup;
 		}
 	}
 
 	if (isnull(cfg.cacert, crypto_sign_BYTES + CERTSIZE)) {
 		lprintf("[erro] No CA certificate in config, see genca\n");
-		goto error;
+		goto cleanup;
 	}
 
 	if (isnull(cfg.capk, crypto_sign_PUBLICKEYBYTES)) {
 		lprintf("[erro] No CA public key in config, see genca\n");
-		goto error;
+		goto cleanup;
 	}
 
 	if (isnull(cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES)) {
 		lprintf("[erro] No client public key in config, see gencert\n");
-		goto error;
+		goto cleanup;
 	}
 
 	if (isnull(cfg.sk, crypto_box_SECRETKEYBYTES)) {
 		lprintf("[erro] No client private key in config, see gencert\n");
-		goto error;
+		goto cleanup;
 	}
 
 	// Handle shutdown correct
 	if (signal(SIGINT, sig_handler) == SIG_ERR) {
 		lprint("[erro] Cannot hook signal\n");
-		goto error;
+		goto cleanup;
 	}
 
 	if (signal(SIGTERM, sig_handler) == SIG_ERR) {
 		lprint("[erro] Cannot hook signal\n");
-		goto error;
+		goto cleanup;
 	}
 
 	if (signal(SIGUSR1, sig_handler) == SIG_ERR) {
 		lprint("[erro] Cannot hook signal\n");
-		goto error;
+		goto cleanup;
 	}
 
 	/* Initialize tun/tap interface */
@@ -990,7 +1012,7 @@ int main(int argc, char *argv[]) {
 	lprint("[info] Starting events\n");
 	ev_loop(EV_A_ 0);
 
-error:
+cleanup:
 	ev_loop_destroy(loop);
 
 	free(cfg.if_name);
