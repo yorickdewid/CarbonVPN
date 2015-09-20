@@ -38,7 +38,7 @@
 #define DEF_MAX_CLIENTS		20
 #define PACKET_MAGIC		0xdeadbaba
 #define PACKET_CNT			1024
-#define HEARTBEAT_INTERVAL	900.
+#define DEF_HEARTBEAT_INTERVAL	1800
 
 EV_P;
 const static unsigned char version[] = "CarbonVPN 0.5 - See Github";
@@ -58,6 +58,7 @@ typedef struct {
 	unsigned short mtu;
 	unsigned char debug;
 	unsigned char max_conn;
+	unsigned int heartbeat_interval;
 	unsigned char cacert[crypto_sign_BYTES + CERTSIZE];
 	unsigned char capk[crypto_sign_PUBLICKEYBYTES];
 	unsigned char cask[crypto_sign_SECRETKEYBYTES];
@@ -135,6 +136,8 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 		pcfg->ip_netmask = strdup(value);
 	} else if (!strcmp(name, "mtu")) {
 		pcfg->mtu = atoi(value);
+	} else if (!strcmp(name, "heartbeat")) {
+		pcfg->heartbeat_interval = atoi(value);
 	} else if (!strcmp(name, "debug")) {
 		pcfg->debug = value[0] == 't' ? 1 : 0;
 	} else if (!strcmp(name, "max_clients")) {
@@ -557,7 +560,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			break;
 		}
 		case PING_BACK:
-			lprintf("[info] [client %d] Server pingback\n", client->index);
+			lprintf("[info] [client %d] Pingback heartbeat alive\n", client->index);
 			break;
 		default:
 			if (cfg.debug) lprintf("[dbug] [client %d] Packet dropped\n", client->index);
@@ -955,6 +958,7 @@ int main(int argc, char *argv[]) {
 	cfg.ip_netmask = strdup(DEF_NETMASK);
 	cfg.debug = 0;
 	cfg.max_conn = DEF_MAX_CLIENTS;
+	cfg.heartbeat_interval = DEF_HEARTBEAT_INTERVAL;
 
 	// Start log
 	start_log();
@@ -1084,8 +1088,10 @@ int main(int argc, char *argv[]) {
 		ev_io_start(EV_A_ &w_accept);
 
 		// Periodic check on clients
-		ev_periodic_init(&i_ping, ping_cb, 0., HEARTBEAT_INTERVAL, 0);
-		ev_periodic_start(loop, &i_ping);
+		if (cfg.heartbeat_interval) {
+			ev_periodic_init(&i_ping, ping_cb, 0., cfg.heartbeat_interval, 0);
+			ev_periodic_start(loop, &i_ping);
+		}
 	}
 
 	// Start infinite loop
