@@ -41,7 +41,7 @@
 #define HEARTBEAT_INTERVAL	900.
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.4 - See Github";
+const static unsigned char version[] = "CarbonVPN 0.5 - See Github";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
@@ -944,10 +944,12 @@ int main(int argc, char *argv[]) {
 	cfg.max_conn = DEF_MAX_CLIENTS;
 
 	// Start log
-	start_log();
+	if (start_log()<0)
+		goto cleanup;
 
 	// Initialize NaCl
-	sodium_init();
+	if (sodium_init()<0)
+		goto cleanup;
 
 	/* Check command line options */
 	while ((option = getopt(argc, argv, "f:i:c:p:ahv"))>0){
@@ -1050,13 +1052,17 @@ int main(int argc, char *argv[]) {
 	/* Client or server mode */
 	if (!cfg.server) {
 		/* Assign the destination address */
-		client_connect(EV_A_ remote_ip);
+		int res = client_connect(EV_A_ remote_ip);
+		if (res < 0)
+			goto cleanup;
 	} else {
 		/* Server, set local addr */
 		int sock = set_ip(cfg.if_name, cfg.ip);
 		set_netmask(sock, cfg.if_name, cfg.ip_netmask);
 
 		sock_fd = server_init(cfg.max_conn);
+		if (sock_fd < 0)
+			goto cleanup;
 
 		// Initialize and start a watcher to accepts client requests
 		ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <time.h>
 #include "logger.h"
@@ -7,11 +8,17 @@
 
 static FILE *fp = NULL;
 
-void start_log() {
+int start_log() {
 	if (!fp) {
 		fp = fopen(LOGFILE, "a");
-		setvbuf(fp, NULL, _IOLBF, 1024);
+		if (fp)
+			setvbuf(fp, NULL, _IOLBF, 1024);
+		else {
+			fputs("[erro] Cannot open log\n", stderr);
+			return -1;
+		}
 	}
+	return 0;
 }
 
 static struct tm *get_time() {
