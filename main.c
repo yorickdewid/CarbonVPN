@@ -284,7 +284,7 @@ int fd_write(int fd, unsigned char *buf, int n) {
 	return read;
 }
 
-void sig_handler(int dummy) {
+void sigint_cb(EV_P_ struct ev_signal *watcher, int revents){
 	lprint("[info] Shutdown daemon\n");
 
 	int i;
@@ -306,7 +306,7 @@ void sig_handler(int dummy) {
 
 	ev_io_stop(EV_A_ &w_accept);
 	ev_io_stop(EV_A_ &w_tun);
-	ev_break(EV_A_ EVBREAK_ALL);
+	ev_unloop(EV_A_ EVUNLOOP_ALL);
 }
 
 void usage(char *name) {
@@ -709,7 +709,7 @@ retry:
 		goto retry;
 	}
 
-	encap.client_id = htonl(1);
+	encap.client_id = htonl(1);//TODO, set index
 	encap.packet_chk = htonl(PACKET_MAGIC);
 	encap.packet_cnt = htonl(conn_client->packet_cnt--);
 	encap.data_len = 0;
@@ -867,6 +867,7 @@ int main(int argc, char *argv[]) {
 	char config_file[NAME_MAX];
 	int sock_fd, option, config = 0;
 	loop = EV_DEFAULT;
+	struct ev_signal w_signal;
 
 	memset(&cfg, 0, sizeof(config_t));
 	
@@ -963,25 +964,22 @@ int main(int argc, char *argv[]) {
 		goto cleanup;
 	}
 
-	// Handle shutdown correct
-	if (signal(SIGINT, sig_handler) == SIG_ERR) {
-		lprint("[erro] Cannot hook signal\n");
-		goto cleanup;
-	}
+	// Follow exit routine
+	ev_signal_init(&w_signal, sigint_cb, SIGINT);
+	ev_signal_start(EV_A_ &w_signal);
 
-	if (signal(SIGTERM, sig_handler) == SIG_ERR) {
-		lprint("[erro] Cannot hook signal\n");
-		goto cleanup;
-	}
+	ev_signal_init(&w_signal, sigint_cb, SIGTERM);
+	ev_signal_start(EV_A_ &w_signal);
 
-	if (signal(SIGUSR1, sig_handler) == SIG_ERR) {
-		lprint("[erro] Cannot hook signal\n");
-		goto cleanup;
-	}
+	ev_signal_init(&w_signal, sigint_cb, SIGUSR1);
+	ev_signal_start(EV_A_ &w_signal);
+
+	ev_signal_init(&w_signal, sigint_cb, SIGHUP);
+	ev_signal_start(EV_A_ &w_signal);
 
 	// Initialize client pool
 	vector_init(&vector_clients, cfg.max_conn);
-
+//TODO, move this to func
 	/* Initialize tun/tap interface */
 	tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI);
 
