@@ -55,6 +55,7 @@ typedef struct {
 	char *if_name;
 	char *ip;
 	char *ip_netmask;
+	unsigned short mtu;
 	unsigned char debug;
 	unsigned char max_conn;
 	unsigned char cacert[crypto_sign_BYTES + CERTSIZE];
@@ -132,6 +133,8 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 	} else if (!strcmp(name, "netmask")) {
 		free(pcfg->ip_netmask);
 		pcfg->ip_netmask = strdup(value);
+	} else if (!strcmp(name, "mtu")) {
+		pcfg->mtu = atoi(value);
 	} else if (!strcmp(name, "debug")) {
 		pcfg->debug = value[0] == 't' ? 1 : 0;
 	} else if (!strcmp(name, "max_clients")) {
@@ -232,6 +235,24 @@ int set_netmask(int sock_fd, char *ifname, char *ip_addr_mask ) {
 	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
 
 	if (ioctl(sock_fd, SIOCSIFNETMASK, &ifr)<0) {
+		lprint("[erro] Cannot set netmask\n");
+		return -1;
+	}
+
+	return sock_fd;
+}
+
+int set_mtu(int sock_fd, char *ifname, unsigned short mtu) {
+	struct ifreq ifr;
+
+	struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
+	memset(&ifr, 0, sizeof(ifr));
+	sin->sin_family = AF_INET;
+	
+	ifr.ifr_mtu = mtu; 
+	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
+
+	if (ioctl(sock_fd, SIOCSIFMTU, &ifr)<0) {
 		lprint("[erro] Cannot set netmask\n");
 		return -1;
 	}
@@ -455,6 +476,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 
 					int sock = set_ip(cfg.if_name, client_key.ip);
 					set_netmask(sock, cfg.if_name, client_key.netmask);
+					if (cfg.mtu)
+						set_mtu(sock, cfg.if_name, cfg.mtu);
 					client->hladdr = inet_ntohl(client_key.ip);
 
 					lprintf("[info] [client %d] Assgined %s/%s\n", client->index, client_key.ip, client_key.netmask);
@@ -1048,6 +1071,9 @@ int main(int argc, char *argv[]) {
 		/* Server, set local addr */
 		int sock = set_ip(cfg.if_name, cfg.ip);
 		set_netmask(sock, cfg.if_name, cfg.ip_netmask);
+
+		if (cfg.mtu)
+			set_mtu(sock, cfg.if_name, cfg.mtu);
 
 		sock_fd = server_init(cfg.max_conn);
 		if (sock_fd < 0)
