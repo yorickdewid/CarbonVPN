@@ -737,7 +737,7 @@ int client_connect(EV_P_ char *remote_addr) {
 	vector_append(&vector_clients, (void *)conn_client);
 
 retry:
-	encap.client_id = client->hladdr;
+	encap.client_id = conn_client->hladdr;
 	encap.packet_chk = htonl(PACKET_MAGIC);
 	encap.packet_cnt = htonl(conn_client->packet_cnt--);
 	encap.data_len = 0;
@@ -748,7 +748,7 @@ retry:
 		goto retry;
 	}
 
-	encap.client_id = client->hladdr;
+	encap.client_id = conn_client->hladdr;
 	encap.packet_chk = htonl(PACKET_MAGIC);
 	encap.packet_cnt = htonl(conn_client->packet_cnt--);
 	encap.data_len = 0;
