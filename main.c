@@ -95,7 +95,6 @@ struct handshake {
 } __attribute__ ((packed));
 
 struct wrapper {
-	unsigned int client_id;
 	int packet_chk;
 	unsigned int packet_cnt;
 	unsigned short data_len;
@@ -396,7 +395,6 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 				if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
 					lprintf("[info] [client %d] Signature verified\n", client->index);
 
-					encap.client_id = client->hladdr;
 					encap.packet_chk = htonl(PACKET_MAGIC);
 					encap.packet_cnt = htonl(client->packet_cnt--);
 					encap.data_len = 0;
@@ -446,7 +444,6 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					client->packet_cnt = PACKET_CNT;
 					crypto_box_easy(ciphertext, client->st_pk, crypto_box_PUBLICKEYBYTES, nonce, client->cl_lt_pk, cfg.sk);
 
-					encap.client_id = client->hladdr;
 					encap.packet_chk = htonl(PACKET_MAGIC);
 					encap.packet_cnt = htonl(client->packet_cnt--);
 					encap.data_len = 0;
@@ -485,7 +482,6 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 				crypto_box_beforenm(client->sshk, cl_st_pk, client->st_sk);
 				crypto_box_easy(ciphertext, client->st_pk, crypto_box_PUBLICKEYBYTES, nonce, client->cl_lt_pk, cfg.sk);
 
-				encap.client_id = client->hladdr;
 				encap.packet_chk = htonl(PACKET_MAGIC);
 				encap.packet_cnt = htonl(client->packet_cnt--);
 				encap.data_len = 0;
@@ -529,7 +525,6 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			break;
 		}
 		case PING: {
-			encap.client_id = client->hladdr;
 			encap.packet_chk = htonl(PACKET_MAGIC);
 			encap.packet_cnt = htonl(client->packet_cnt--);
 			encap.data_len = 0;
@@ -557,7 +552,6 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		client->packet_cnt = PACKET_CNT;
 		crypto_box_easy(ciphertext, client->st_pk, crypto_box_PUBLICKEYBYTES, nonce, client->cl_lt_pk, cfg.sk);
 
-		encap.client_id = client->hladdr;
 		encap.packet_chk = htonl(PACKET_MAGIC);
 		encap.packet_cnt = htonl(client->packet_cnt--);
 		encap.data_len = 0;
@@ -605,7 +599,6 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 		crypto_box_easy_afternm(cbuffer, buffer, nread, nonce, client->sshk);
 
 		struct wrapper encap;
-		encap.client_id = client->hladdr;
 		encap.packet_chk = htonl(PACKET_MAGIC);
 		encap.packet_cnt = htonl(client->packet_cnt--);
 		encap.data_len = htons(crypto_box_MACBYTES + nread);
@@ -737,7 +730,6 @@ int client_connect(EV_P_ char *remote_addr) {
 	vector_append(&vector_clients, (void *)conn_client);
 
 retry:
-	encap.client_id = conn_client->hladdr;
 	encap.packet_chk = htonl(PACKET_MAGIC);
 	encap.packet_cnt = htonl(conn_client->packet_cnt--);
 	encap.data_len = 0;
@@ -748,7 +740,6 @@ retry:
 		goto retry;
 	}
 
-	encap.client_id = conn_client->hladdr;
 	encap.packet_chk = htonl(PACKET_MAGIC);
 	encap.packet_cnt = htonl(conn_client->packet_cnt--);
 	encap.data_len = 0;
@@ -810,7 +801,6 @@ void ping_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 		if (!client)
 			continue;
 
-		encap.client_id = client->hladdr;
 		encap.packet_chk = htonl(PACKET_MAGIC);
 		encap.packet_cnt = htonl(client->packet_cnt--);
 		encap.data_len = 0;
@@ -944,8 +934,7 @@ int main(int argc, char *argv[]) {
 	cfg.max_conn = DEF_MAX_CLIENTS;
 
 	// Start log
-	if (start_log()<0)
-		goto cleanup;
+	start_log();
 
 	// Initialize NaCl
 	if (sodium_init()<0)
