@@ -3,13 +3,18 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+
+#define __USE_BSD 
+#include <sys/types.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <arpa/inet.h>
 #include <sys/ioctl.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
 #include <linux/limits.h>
-#include <arpa/inet.h>
-#include <sys/select.h>
+
 #include <signal.h>
 #include <stdarg.h>
 #include <getopt.h>
@@ -75,6 +80,7 @@ struct sock_ev_client {
 	ev_io io;
 	int net_fd;
 	int index;
+	unsigned long hladdr;
 	unsigned int packet_cnt;
 	unsigned char st_pk[crypto_box_PUBLICKEYBYTES];
 	unsigned char st_sk[crypto_box_SECRETKEYBYTES];
@@ -248,6 +254,14 @@ char *incr_ip(char *ip_addr, unsigned char increment) {
 	return ip;
 }
 
+unsigned long inet_ntohl(char *ip_addr) {
+	struct sockaddr_in sin;
+
+	inet_pton(AF_INET, ip_addr, &sin.sin_addr);
+
+	return ntohl(sin.sin_addr.s_addr);
+}
+
 int fd_read(struct sock_ev_client *client, unsigned char *buf, int n){
 	int read;
 
@@ -391,6 +405,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 					strncpy(client_key.ip, incr_ip(cfg.ip, client->index), 15);
 					strncpy(client_key.netmask, cfg.ip_netmask, 15);
+					client->hladdr = inet_ntohl(client_key.ip);
 
 					fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
 					fd_write(client->net_fd, (unsigned char *)&client_key, sizeof(client_key));
@@ -443,6 +458,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 
 					int sock = set_ip(cfg.if_name, client_key.ip);
 					set_netmask(sock, cfg.if_name, client_key.netmask);
+					client->hladdr = inet_ntohl(client_key.ip);
 
 					lprintf("[info] [client %d] Assgined %s/%s\n", client->index, client_key.ip, client_key.netmask);
 				} else {
@@ -558,6 +574,7 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 	unsigned char buffer[BUFSIZE];
 	unsigned char cbuffer[crypto_box_MACBYTES + BUFSIZE];
 	unsigned short nread;
+	int tap = 0;
 
 	if((nread = read(watcher->fd, buffer, BUFSIZE))<0){
 		lprint("[warn] Cannot read device\n");
@@ -566,11 +583,21 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 
 	if (cfg.debug) lprintf("[dbug] Read %d bytes from tun\n", nread);
 
+	struct tun_pi *pi = (struct tun_pi *)buffer;
+	struct ip *iphdr = (struct ip *)(buffer+sizeof(struct tun_pi));
+
+	if ((pi->flags & IFF_TAP) == IFF_TAP)
+		tap = 1;
+
 	int i;
 	struct sock_ev_client *client = NULL;
 	for (i=0; i<vector_clients.size; ++i) {
 		client = (struct sock_ev_client *)vector_get(&vector_clients, i);
 		if (!client)
+			continue;
+
+		unsigned long client_addr = (unsigned long)htonl(client->hladdr);
+		if (client_addr != (unsigned long)iphdr->ip_src.s_addr && cfg.server && !tap)
 			continue;
 
 		unsigned char nonce[crypto_box_NONCEBYTES];
@@ -589,6 +616,7 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 		fd_write(client->net_fd, cbuffer, crypto_box_MACBYTES + nread);
 
 		if (cfg.debug) lprintf("[dbug] [client %d] Wrote %d bytes to socket\n", client->index, crypto_box_MACBYTES + nread);
+		
 	}
 }
 
