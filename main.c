@@ -97,6 +97,22 @@ struct wrapper {
 	unsigned char nonce[crypto_box_NONCEBYTES];
 } __attribute__ ((packed));
 
+void usage(char *name) {
+	fprintf(stderr, "Usage: %s [OPTIONS] [COMMANDS]\n", name);
+	fprintf(stderr, "Options\n");
+	fprintf(stderr, "  -f <file>       Read options from config file\n");
+	fprintf(stderr, "  -i <interface>  Use specific interface (Default: " DEF_IFNAME ")\n");
+	fprintf(stderr, "  -c <address>    Connect to remote VPN server (Enables client mode)\n");
+	fprintf(stderr, "  -p <port>       Bind to port or connect to port (Default: %u)\n", DEF_PORT);
+	fprintf(stderr, "  -a              Use TAP interface (Default: TUN)\n");
+	fprintf(stderr, "  -v              Verbose output\n");
+	fprintf(stderr, "  -h              This help text\n\n");
+	fprintf(stderr, "Commands\n");
+	fprintf(stderr, "  genca           Generate CA certificate\n");
+	fprintf(stderr, "  gencert         Create and sign certificate\n");
+	fprintf(stderr, "\n%s\n", version);
+}
+
 int parse_config(void *_pcfg, const char *section, const char *name, const char *value) {
 	config_t *pcfg = (config_t*)_pcfg;
 
@@ -314,22 +330,6 @@ void sigint_cb(EV_P_ struct ev_signal *watcher, int revents){
 	ev_io_stop(EV_A_ &w_accept);
 	ev_io_stop(EV_A_ &w_tun);
 	ev_unloop(EV_A_ EVUNLOOP_ALL);
-}
-
-void usage(char *name) {
-	fprintf(stderr, "Usage: %s [OPTIONS] [COMMANDS]\n", name);
-	fprintf(stderr, "Options\n");
-	fprintf(stderr, "  -f <file>       Read options from config file\n");
-	fprintf(stderr, "  -i <interface>  Use specific interface (Default: " DEF_IFNAME ")\n");
-	fprintf(stderr, "  -c <address>    Connect to remote VPN server (Enables client mode)\n");
-	fprintf(stderr, "  -p <port>       Bind to port or connect to port (Default: %u)\n", DEF_PORT);
-	fprintf(stderr, "  -a              Use TAP interface (Default: TUN)\n");
-	fprintf(stderr, "  -v              Verbose output\n");
-	fprintf(stderr, "  -h              This help text\n\n");
-	fprintf(stderr, "Commands\n");
-	fprintf(stderr, "  genca           Generate CA certificate\n");
-	fprintf(stderr, "  gencert         Create and sign certificate\n");
-	fprintf(stderr, "\n%s\n", version);
 }
 
 /* Read client message */
