@@ -33,6 +33,7 @@
 #define DEF_MAX_CLIENTS		20
 #define PACKET_MAGIC		0xdeadbaba
 #define PACKET_CNT			1024
+#define HEARTBEAT_INTERVAL	900.
 
 EV_P;
 const static unsigned char version[] = "CarbonVPN 0.4 - See Github";
@@ -611,7 +612,7 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 		fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
 		fd_write(client->net_fd, cbuffer, crypto_box_MACBYTES + nread);
 
-		if (cfg.debug) lprintf("[dbug] Wrote %d bytes to socket\n", crypto_box_MACBYTES + nread);
+		if (cfg.debug) lprintf("[dbug] [client %d] Wrote %d bytes to socket\n", client->index, crypto_box_MACBYTES + nread);
 	}
 }
 
@@ -760,6 +761,30 @@ int server_init(int max_queue) {
 	return sd;
 }
 
+/* Heartbeat to keep connection alive */
+void ping_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
+	int i;
+	struct wrapper encap;
+	struct sock_ev_client *client = NULL;
+
+	for (i=0; i<vector_clients.size; ++i) {
+		client = (struct sock_ev_client *)vector_get(&vector_clients, i);
+		if (!client)
+			continue;
+
+		encap.client_id = htonl(1);
+		encap.packet_chk = htonl(PACKET_MAGIC);
+		encap.packet_cnt = htonl(client->packet_cnt--);
+		encap.data_len = 0;
+		encap.mode = PING;
+
+		lprintf("[info] [client %d] Sending ping\n", client->index);
+		if (fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap))<0) {
+			lprintf("[warn] [client %d] Pingback failed\n", client->index);
+		}
+	}
+}
+
 /* Generate new CA */
 void cert_genca() {
 	unsigned char pk[crypto_sign_PUBLICKEYBYTES];
@@ -868,6 +893,7 @@ int main(int argc, char *argv[]) {
 	int sock_fd, option, config = 0;
 	loop = EV_DEFAULT;
 	struct ev_signal w_signal;
+	struct ev_periodic i_ping;
 
 	memset(&cfg, 0, sizeof(config_t));
 	
@@ -1001,6 +1027,10 @@ int main(int argc, char *argv[]) {
 		// Initialize and start a watcher to accepts client requests
 		ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);
 		ev_io_start(EV_A_ &w_accept);
+
+		// Periodic check on clients
+		ev_periodic_init(&i_ping, ping_cb, 0., HEARTBEAT_INTERVAL, 0);
+		ev_periodic_start(loop, &i_ping);
 	}
 
 	// Start infinite loop
