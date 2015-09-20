@@ -173,6 +173,12 @@ int set_ip(char *ifname, char *ip_addr) {
 	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
 	memcpy(&ifr.ifr_addr, &sin, sizeof(struct sockaddr)); 
 
+	// Set it non-blocking
+	if (setnonblock(sock_fd)<0) {
+		perror("echo server socket nonblock");
+		return -1;
+	}
+
 	/* Set interface address */
 	if (ioctl(sock_fd, SIOCSIFADDR, &ifr)<0) {
 		lprint("[erro] Cannot set ip address\n");
@@ -324,36 +330,6 @@ void usage(char *name) {
 	fprintf(stderr, "  genca           Generate CA certificate\n");
 	fprintf(stderr, "  gencert         Create and sign certificate\n");
 	fprintf(stderr, "\n%s\n", version);
-}
-
-int tun_init(char *dev, int flags) {
-	struct ifreq ifr;
-	int fd, err;
-
-	if((fd = open("/dev/net/tun", O_RDWR)) < 0 ) {
-		lprint("[erro] Cannot create interface\n");
-		return -1;
-	}
-
-	if (setnonblock(fd)<0) {
-		lprint("[erro] Cannot set nonblock\n");
-		return -1;
-	}
-
-	memset(&ifr, 0, sizeof(ifr));
-	ifr.ifr_flags = flags;
-
-	if (*dev)
-		strncpy(ifr.ifr_name, dev, IFNAMSIZ);
-
-	if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
-		lprint("[erro] Cannot set interface\n");
-		close(fd);
-		return err;
-	}
-
-	strcpy(dev, ifr.ifr_name);
-	return fd;
 }
 
 /* Read client message */
@@ -614,6 +590,40 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 
 		if (cfg.debug) lprintf("[dbug] [client %d] Wrote %d bytes to socket\n", client->index, crypto_box_MACBYTES + nread);
 	}
+}
+
+int tun_init(char *dev, int flags) {
+	struct ifreq ifr;
+	int fd, err;
+
+	if((fd = open("/dev/net/tun", O_RDWR)) < 0 ) {
+		lprint("[erro] Cannot create interface\n");
+		return -1;
+	}
+
+	if (setnonblock(fd)<0) {
+		lprint("[erro] Cannot set nonblock\n");
+		return -1;
+	}
+
+	memset(&ifr, 0, sizeof(ifr));
+	ifr.ifr_flags = flags;
+
+	if (*dev)
+		strncpy(ifr.ifr_name, dev, IFNAMSIZ);
+
+	if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
+		lprint("[erro] Cannot set interface\n");
+		close(fd);
+		return err;
+	}
+
+	// Initialize and start watcher to read tun interface
+	ev_io_init(&w_tun, tun_cb, fd, EV_READ);
+	ev_io_start(EV_A_ &w_tun);
+
+	strcpy(dev, ifr.ifr_name);
+	return fd;
 }
 
 /* Accept client requests */
@@ -1005,13 +1015,9 @@ int main(int argc, char *argv[]) {
 
 	// Initialize client pool
 	vector_init(&vector_clients, cfg.max_conn);
-//TODO, move this to func
+
 	/* Initialize tun/tap interface */
 	tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI);
-
-	// Initialize and start watcher to read tun interface
-	ev_io_init(&w_tun, tun_cb, tap_fd, EV_READ);
-	ev_io_start(EV_A_ &w_tun);
 
 	/* Client or server mode */
 	if (!cfg.server) {
