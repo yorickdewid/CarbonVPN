@@ -1032,7 +1032,10 @@ int daemonize(char *remote_addr, int flags) {
 	}
 #endif
 
-	/* Daemon initialization */
+	// Only log to file
+	log_tty(0);
+
+	// Daemon initialization
 	ev_start_loop(remote_addr, flags);
 	return 0;
 }

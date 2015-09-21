@@ -7,6 +7,7 @@
 #define LOGFILE		"carbonvpn.log"
 
 static FILE *fp = NULL;
+static char log_tty_std = 1;
 
 int start_log() {
 	if (!fp) {
@@ -31,6 +32,10 @@ static struct tm *get_time() {
 	return ltime;
 }
 
+void log_tty(char b) {
+	log_tty_std = b;
+}
+
 void lprintf(const char *format, ...) {
 	va_list arglist;
 	char buf[32];
@@ -43,9 +48,11 @@ void lprintf(const char *format, ...) {
 		va_end(arglist);
 	}
 
-	va_start(arglist, format);
-	vfprintf(stderr, format, arglist);
-	va_end(arglist);
+	if (log_tty_std) {
+		va_start(arglist, format);
+		vfprintf(stderr, format, arglist);
+		va_end(arglist);
+	}
 }
 
 void lprint(const char *str) {
@@ -57,7 +64,8 @@ void lprint(const char *str) {
 		fputs(str, fp);
 	}
 
-	fputs(str, stderr);
+	if (log_tty_std)
+		fputs(str, stderr);
 }
 
 void stop_log() {
