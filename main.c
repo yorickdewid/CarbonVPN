@@ -22,7 +22,7 @@
 #include <sodium.h>
 #include <ev.h>
 
-#include "endian.h"
+#include "be.h"
 #include "logger.h"
 #include "conf.h"
 #include "vector.h"
