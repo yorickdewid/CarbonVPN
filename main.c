@@ -37,7 +37,7 @@
 #define DEF_NETMASK			"255.255.255.0"
 #define DEF_MAX_CLIENTS		20
 #define PACKET_MAGIC		0xdeadbaba
-#define PACKET_CNT			1024
+#define PACKET_CNT			2048
 #define DEF_HEARTBEAT_INTERVAL	1800
 
 EV_P;
