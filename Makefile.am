@@ -1,8 +1,8 @@
 AUTOMAKE_OPTIONS = foreign
 
 # Flags
-CFLAGS = --pedantic -Wall -std=c99 -O2
-LDFLAGS = -lev -lsodium
+# CFLAGS = -pedantic -O2
+# LDFLAGS = -lev -lsodium
 
 #Binairy
 bin_PROGRAMS = carbond

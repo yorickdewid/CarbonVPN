@@ -1,12 +1,16 @@
 AC_PREREQ([2.69])
 AC_INIT(CarbonVPN, CarbonVPN 0.6, https://github.com/yorickdewid/CarbonVPN)
 AM_INIT_AUTOMAKE
+AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_SRCDIR([logger.c])
 AC_CONFIG_HEADERS([config.h])
 AC_MSG_NOTICE([CarbonVPN])
 
 # Checks for programs
 AC_PROG_CC_STDC
+
+CFLAGS="$CFLAGS -pedantic -Wall -Wextra -Werror";
+LDFLAGS="$LDFLAGS -lev -lsodium ";
 
 # Checks for libraries.
 AC_CHECK_LIB(ev, ev_io_init)
@@ -17,6 +21,8 @@ AC_CHECK_HEADERS([arpa/inet.h fcntl.h netinet/in.h stdlib.h string.h sys/ioctl.h
 AC_CHECK_HEADERS([linux/if.h linux/if_tun.h])
 AC_CHECK_HEADERS([getopt.h stdarg.h errno.h])
 AC_CHECK_HEADERS([sodium.h ev.h])
+
+AX_CHECK_COMPILE_FLAG([-fno-strict-aliasing], [CFLAGS="$CFLAGS -fno-strict-aliasing"])
 
 # Checks for typedefs, structures, and compiler characteristics
 AC_TYPE_PID_T
