@@ -41,7 +41,7 @@
 #define DEF_HEARTBEAT_INTERVAL	1800
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.5 - See Github";
+const static unsigned char version[] = "CarbonVPN 0.6 - See Github";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
@@ -58,6 +58,7 @@ typedef struct {
 	unsigned short mtu;
 	unsigned char debug;
 	unsigned char max_conn;
+	unsigned char daemon;
 	unsigned int heartbeat_interval;
 	unsigned char cacert[crypto_sign_BYTES + CERTSIZE];
 	unsigned char capk[crypto_sign_PUBLICKEYBYTES];
@@ -112,6 +113,7 @@ void usage(char *name) {
 	fprintf(stderr, "  -c <address>    Connect to remote VPN server (Enables client mode)\n");
 	fprintf(stderr, "  -p <port>       Bind to port or connect to port (Default: %u)\n", DEF_PORT);
 	fprintf(stderr, "  -a              Use TAP interface (Default: TUN)\n");
+	fprintf(stderr, "  -d              Run daemon in background\n");
 	fprintf(stderr, "  -v              Verbose output\n");
 	fprintf(stderr, "  -h              This help text\n\n");
 	fprintf(stderr, "Commands\n");
@@ -140,6 +142,8 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 		pcfg->heartbeat_interval = atoi(value);
 	} else if (!strcmp(name, "debug")) {
 		pcfg->debug = value[0] == 't' ? 1 : 0;
+	} else if (!strcmp(name, "daemonize")) {
+		pcfg->daemon = value[0] == 't' ? 1 : 0;
 	} else if (!strcmp(name, "max_clients")) {
 		pcfg->max_conn = atoi(value);
 	} else if (!strcmp(name, "cacert")) {
@@ -179,7 +183,7 @@ int setnonblock(int fd) {
 int create_socket() {
 	int sock_fd = 0;
 
-	if((sock_fd = socket(AF_INET, SOCK_DGRAM, 0))<0){
+	if((sock_fd = socket(AF_INET, SOCK_STREAM, 0))<0){
 		lprint("[erro] Cannot create socket\n");
 		return -1;
 	}
@@ -256,7 +260,7 @@ int set_mtu(int sock_fd, char *ifname, unsigned short mtu) {
 	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
 
 	if (ioctl(sock_fd, SIOCSIFMTU, &ifr)<0) {
-		lprint("[erro] Cannot set netmask\n");
+		lprint("[erro] Cannot set MTU\n");
 		return -1;
 	}
 
@@ -940,14 +944,105 @@ void cert_gencert() {
 	sodium_memzero(sk, sizeof(sk));
 }
 
+int ev_start_loop(char *remote_addr, int flags) {
+	int sock_fd;
+	struct ev_signal w_signal;
+	struct ev_periodic i_ping;
+
+	// Follow exit routine
+	ev_signal_init(&w_signal, sigint_cb, SIGINT);
+	ev_signal_start(EV_A_ &w_signal);
+
+	ev_signal_init(&w_signal, sigint_cb, SIGTERM);
+	ev_signal_start(EV_A_ &w_signal);
+
+	ev_signal_init(&w_signal, sigint_cb, SIGUSR1);
+	ev_signal_start(EV_A_ &w_signal);
+
+	ev_signal_init(&w_signal, sigint_cb, SIGHUP);
+	ev_signal_start(EV_A_ &w_signal);
+
+	// Initialize client pool
+	vector_init(&vector_clients, cfg.max_conn);
+
+	/* Initialize tun/tap interface */
+	tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI);
+
+	/* Client or server mode */
+	if (!cfg.server) {
+		/* Assign the destination address */
+		int res = client_connect(EV_A_ remote_addr);
+		if (res < 0)
+			return -1;
+	} else {
+		/* Server, set local addr */
+		int sock = set_ip(cfg.if_name, cfg.ip);
+		set_netmask(sock, cfg.if_name, cfg.ip_netmask);
+
+		if (cfg.mtu)
+			set_mtu(sock, cfg.if_name, cfg.mtu);
+
+		sock_fd = server_init(cfg.max_conn);
+		if (sock_fd < 0)
+			return -1;
+
+		// Initialize and start a watcher to accepts client requests
+		ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);
+		ev_io_start(EV_A_ &w_accept);
+
+		// Periodic check on clients
+		if (cfg.heartbeat_interval) {
+			ev_periodic_init(&i_ping, ping_cb, 0., cfg.heartbeat_interval, 0);
+			ev_periodic_start(loop, &i_ping);
+		}
+	}
+
+	// Start infinite loop
+	lprint("[info] Starting events\n");
+	ev_loop(EV_A_ 0);
+
+	return 0;
+}
+
+int daemonize(char *remote_addr, int flags) {
+	pid_t pid, sid;
+
+	lprintf("[info] Starting daemon in background\n");
+	pid = fork();
+	if (pid < 0) {
+		lprintf("[erro] Failed to fork into background\n");
+		return 1;
+	}
+
+	if (pid > 0) {
+		return 0;
+	}
+	umask(0);
+
+	sid = setsid();
+	if (sid < 0) {
+		lprintf("[erro] Failed to promote to session leader\n");
+		return 1;
+	}
+
+#if SECURE_CHROOT
+	if ((chdir("/")) < 0) {
+			lprintf("[erro] Failed to change directory\n");
+			return 1;
+	}
+#endif
+
+	/* Daemon initialization */
+	ev_start_loop(remote_addr, flags);
+	return 0;
+}
+
 int main(int argc, char *argv[]) {
 	int flags = IFF_TUN;
 	char remote_ip[ADDRSIZE];
 	char config_file[NAME_MAX];
-	int sock_fd, option, config = 0;
+	int option, config = 0;
 	loop = EV_DEFAULT;
-	struct ev_signal w_signal;
-	struct ev_periodic i_ping;
 
 	memset(&cfg, 0, sizeof(config_t));
 	
@@ -958,6 +1053,7 @@ int main(int argc, char *argv[]) {
 	cfg.ip_netmask = strdup(DEF_NETMASK);
 	cfg.debug = 0;
 	cfg.max_conn = DEF_MAX_CLIENTS;
+	cfg.daemon = 0;
 	cfg.heartbeat_interval = DEF_HEARTBEAT_INTERVAL;
 
 	// Start log
@@ -968,8 +1064,11 @@ int main(int argc, char *argv[]) {
 		goto cleanup;
 
 	/* Check command line options */
-	while ((option = getopt(argc, argv, "f:i:c:p:ahv"))>0){
+	while ((option = getopt(argc, argv, "f:i:c:p:ahvd"))>0){
 		switch (option) {
+			case 'd':
+				cfg.daemon = 1;
+				break;
 			case 'v':
 				cfg.debug = 1;
 				break;
@@ -1046,57 +1145,10 @@ int main(int argc, char *argv[]) {
 		goto cleanup;
 	}
 
-	// Follow exit routine
-	ev_signal_init(&w_signal, sigint_cb, SIGINT);
-	ev_signal_start(EV_A_ &w_signal);
-
-	ev_signal_init(&w_signal, sigint_cb, SIGTERM);
-	ev_signal_start(EV_A_ &w_signal);
-
-	ev_signal_init(&w_signal, sigint_cb, SIGUSR1);
-	ev_signal_start(EV_A_ &w_signal);
-
-	ev_signal_init(&w_signal, sigint_cb, SIGHUP);
-	ev_signal_start(EV_A_ &w_signal);
-
-	// Initialize client pool
-	vector_init(&vector_clients, cfg.max_conn);
-
-	/* Initialize tun/tap interface */
-	tap_fd = tun_init(cfg.if_name, flags | IFF_NO_PI);
-
-	/* Client or server mode */
-	if (!cfg.server) {
-		/* Assign the destination address */
-		int res = client_connect(EV_A_ remote_ip);
-		if (res < 0)
-			goto cleanup;
-	} else {
-		/* Server, set local addr */
-		int sock = set_ip(cfg.if_name, cfg.ip);
-		set_netmask(sock, cfg.if_name, cfg.ip_netmask);
-
-		if (cfg.mtu)
-			set_mtu(sock, cfg.if_name, cfg.mtu);
-
-		sock_fd = server_init(cfg.max_conn);
-		if (sock_fd < 0)
-			goto cleanup;
-
-		// Initialize and start a watcher to accepts client requests
-		ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);
-		ev_io_start(EV_A_ &w_accept);
-
-		// Periodic check on clients
-		if (cfg.heartbeat_interval) {
-			ev_periodic_init(&i_ping, ping_cb, 0., cfg.heartbeat_interval, 0);
-			ev_periodic_start(loop, &i_ping);
-		}
-	}
-
-	// Start infinite loop
-	lprint("[info] Starting events\n");
-	ev_loop(EV_A_ 0);
+	if (cfg.daemon)
+		daemonize(remote_ip, flags);
+	else
+		ev_start_loop(remote_ip, flags);
 
 cleanup:
 	ev_loop_destroy(loop);
