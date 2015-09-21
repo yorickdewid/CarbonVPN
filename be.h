@@ -1,3 +1,6 @@
+#ifndef BE_H
+#define BE_H
+
 #include <endian.h>
 
 #if __BYTE_ORDER == __BIG_ENDIAN
@@ -22,3 +25,5 @@
    (((val) <<  8) & 0x000000FF00000000) | (((val) << 24) & 0x0000FF0000000000) | \
    (((val) << 40) & 0x00FF000000000000) | (((val) << 56) & 0xFF00000000000000) )
 #endif
+
+#endif // BE_H
