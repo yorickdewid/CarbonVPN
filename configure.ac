@@ -12,6 +12,10 @@ AC_PROG_CC_STDC
 CFLAGS="$CFLAGS -pedantic -Wall -Wextra -Werror";
 LDFLAGS="$LDFLAGS -lev -lsodium ";
 
+CFLAGS="$CFLAGS -fno-strict-aliasing";
+CFLAGS="$CFLAGS -Wno-unused-parameter";
+CFLAGS="$CFLAGS -Wno-old-style-declaration";
+
 # Checks for libraries.
 AC_CHECK_LIB(ev, ev_io_init)
 AC_CHECK_LIB(sodium, sodium_init)
@@ -21,8 +25,6 @@ AC_CHECK_HEADERS([arpa/inet.h fcntl.h netinet/in.h stdlib.h string.h sys/ioctl.h
 AC_CHECK_HEADERS([linux/if.h linux/if_tun.h])
 AC_CHECK_HEADERS([getopt.h stdarg.h errno.h])
 AC_CHECK_HEADERS([sodium.h ev.h])
-
-AX_CHECK_COMPILE_FLAG([-fno-strict-aliasing], [CFLAGS="$CFLAGS -fno-strict-aliasing"])
 
 # Checks for typedefs, structures, and compiler characteristics
 AC_TYPE_PID_T

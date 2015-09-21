@@ -4,7 +4,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#define __USE_BSD 
+#ifndef __USE_BSD 
+#define __USE_BSD
+#endif
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -129,13 +131,13 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 		pcfg->port = atoi(value);
 	} else if (!strcmp(name, "interface")) {
 		free(pcfg->if_name);
-		pcfg->if_name = strdup(value);
+		pcfg->if_name = c_strdup(value);
 	} else if (!strcmp(name, "router")) {
 		free(pcfg->ip);
-		pcfg->ip = strdup(value);
+		pcfg->ip = c_strdup(value);
 	} else if (!strcmp(name, "netmask")) {
 		free(pcfg->ip_netmask);
-		pcfg->ip_netmask = strdup(value);
+		pcfg->ip_netmask = c_strdup(value);
 	} else if (!strcmp(name, "mtu")) {
 		pcfg->mtu = atoi(value);
 	} else if (!strcmp(name, "heartbeat")) {
@@ -597,7 +599,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 	unsigned char buffer[BUFSIZE];
 	unsigned char cbuffer[crypto_box_MACBYTES + BUFSIZE];
-	unsigned short nread;
+	short nread;
 	int tap = 0;
 
 	if((nread = read(watcher->fd, buffer, BUFSIZE))<0){
@@ -1051,9 +1053,9 @@ int main(int argc, char *argv[]) {
 	
 	cfg.server = 1;
 	cfg.port = DEF_PORT;
-	cfg.if_name = strdup(DEF_IFNAME);
-	cfg.ip = strdup(DEF_ROUTER_ADDR);
-	cfg.ip_netmask = strdup(DEF_NETMASK);
+	cfg.if_name = c_strdup(DEF_IFNAME);
+	cfg.ip = c_strdup(DEF_ROUTER_ADDR);
+	cfg.ip_netmask = c_strdup(DEF_NETMASK);
 	cfg.debug = 0;
 	cfg.max_conn = DEF_MAX_CLIENTS;
 	cfg.daemon = 0;
@@ -1080,7 +1082,7 @@ int main(int argc, char *argv[]) {
 				return 1;
 			case 'i':
 				free(cfg.if_name);
-				cfg.if_name = strdup(optarg);
+				cfg.if_name = c_strdup(optarg);
 				break;
 			case 'c':
 				cfg.server = 0;
