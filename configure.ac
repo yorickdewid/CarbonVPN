@@ -1,4 +1,4 @@
-AC_PREREQ([2.69])
+AC_PREREQ([2.68])
 AC_INIT(CarbonVPN, CarbonVPN 0.6, https://github.com/yorickdewid/CarbonVPN)
 AM_INIT_AUTOMAKE
 AC_CONFIG_MACRO_DIR([m4])
