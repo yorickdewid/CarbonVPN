@@ -18,11 +18,11 @@ Version 1.0 will **not** be released until the protocol has proven to be _secure
 
 ## Development
 
-All project files are available through Github. Pull requests are welcome!
+All project files are available through GitHub. Pull requests are welcome!
 
 ## Documentation
 
-Documentation is comming soon and there will also be a Gitbook available to
+Documentation is coming soon and there will also be a GitBook available to
 cover the most basic setups.
 
 ## License
