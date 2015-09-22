@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#ifndef __USE_BSD 
+#ifndef __USE_BSD
 #define __USE_BSD
 #endif
 #include <sys/types.h>
@@ -28,22 +28,23 @@
 #include "logger.h"
 #include "conf.h"
 #include "vector.h"
+#include "snappy/snappy.h"
 #include "util.h"
 
-#define BUFSIZE				2048
-#define CERTSIZE			32
-#define ADDRSIZE			16
-#define DEF_PORT			5059
-#define DEF_IFNAME			"tun0"
+#define BUFSIZE			2048
+#define CERTSIZE		32
+#define ADDRSIZE		16
+#define DEF_PORT		5059
+#define DEF_IFNAME		"tun0"
 #define DEF_ROUTER_ADDR		"10.7.0.1"
-#define DEF_NETMASK			"255.255.255.0"
+#define DEF_NETMASK		"255.255.255.0"
 #define DEF_MAX_CLIENTS		20
 #define PACKET_MAGIC		0xdeadbaba
-#define PACKET_CNT			2048
+#define PACKET_CNT		2048
 #define DEF_HEARTBEAT_INTERVAL	1800
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.6 - See Github";
+const static unsigned char version[] = "CarbonVPN 0.7- See https://github.com/yorickdewid/CarbonVPN";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;

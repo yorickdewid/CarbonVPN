@@ -2,7 +2,7 @@ AC_PREREQ([2.69])
 AC_INIT(CarbonVPN, CarbonVPN 0.6, https://github.com/yorickdewid/CarbonVPN)
 AM_INIT_AUTOMAKE
 AC_CONFIG_MACRO_DIR([m4])
-AC_CONFIG_SRCDIR([logger.c])
+AC_CONFIG_SRCDIR([src/main.c])
 AC_CONFIG_HEADERS([config.h])
 AC_MSG_NOTICE([CarbonVPN])
 
@@ -51,5 +51,5 @@ AC_FUNC_MMAP
 AC_CHECK_FUNCS([inet_ntoa memset socket strdup strtol])
 AC_CHECK_FUNCS([memmove munmap strerror strrchr])
 
-AC_CONFIG_FILES([Makefile])
+AC_CONFIG_FILES([Makefile src/Makefile])
 AC_OUTPUT
