@@ -8,6 +8,8 @@ AC_MSG_NOTICE([CarbonVPN])
 
 # Checks for programs
 AC_PROG_CC_STDC
+AC_PROG_LEX
+AC_PROG_MAKE_SET
 
 CFLAGS="$CFLAGS -pedantic -Wall -Wextra -Werror";
 LDFLAGS="$LDFLAGS -lev -lsodium ";
@@ -22,11 +24,13 @@ AC_CHECK_LIB(sodium, sodium_init)
 
 # Checks for header files
 AC_CHECK_HEADERS([arpa/inet.h fcntl.h netinet/in.h stdlib.h string.h sys/ioctl.h sys/socket.h unistd.h endian.h])
+AC_CHECK_HEADERS([limits.h stddef.h])
 AC_CHECK_HEADERS([linux/if.h linux/if_tun.h])
 AC_CHECK_HEADERS([getopt.h stdarg.h errno.h])
 AC_CHECK_HEADERS([sodium.h ev.h])
 
 # Checks for typedefs, structures, and compiler characteristics
+AC_CHECK_HEADER_STDBOOL
 AC_TYPE_PID_T
 AC_TYPE_SIZE_T
 AC_TYPE_SSIZE_T
@@ -43,7 +47,9 @@ AC_C_BIGENDIAN(
 AC_FUNC_FORK
 AC_FUNC_MALLOC
 AC_FUNC_REALLOC
+AC_FUNC_MMAP
 AC_CHECK_FUNCS([inet_ntoa memset socket strdup strtol])
+AC_CHECK_FUNCS([memmove munmap strerror strrchr])
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
