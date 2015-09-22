@@ -11,6 +11,10 @@ CarbonVPN does not depend on a SSL/TLS library but uses its own protocol.
 CarbonVPN currently supports most Linux distro's and BSD variants.
 A Windows version is already planned and will be part of the next few releases.
 
+![note](http://www.corpsnedmanuals.us/images/ned-icon-red-exclamation-point.png "Security note")
+
+**Note:** CarbonVPN is still in development and can contain **security flaws and vulnerabilities**. Version 1.0 will **not** be released before the protocol is _secure_.
+
 ## Development
 
 All project files are available through Github. Pull requests are welcome!
