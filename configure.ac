@@ -30,7 +30,6 @@ AC_CHECK_HEADERS([getopt.h stdarg.h errno.h])
 AC_CHECK_HEADERS([sodium.h ev.h])
 
 # Checks for typedefs, structures, and compiler characteristics
-AC_CHECK_HEADER_STDBOOL
 AC_TYPE_PID_T
 AC_TYPE_SIZE_T
 AC_TYPE_SSIZE_T
