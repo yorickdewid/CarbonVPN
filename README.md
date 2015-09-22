@@ -13,7 +13,8 @@ A Windows version is already planned and will be part of the next few releases.
 
 ![note](http://www.corpsnedmanuals.us/images/ned-icon-red-exclamation-point.png "Security note")
 
-**Note:** CarbonVPN is still in development and can contain **security flaws and vulnerabilities**. Version 1.0 will **not** be released before the protocol is _secure_.
+**Note:** CarbonVPN is still in development and can contain **security flaws and vulnerabilities**.
+Version 1.0 will **not** be released until the protocol has proven to be _secure_.
 
 ## Development
 
