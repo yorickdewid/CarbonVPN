@@ -19,15 +19,24 @@ CFLAGS="$CFLAGS -Wno-unused-parameter";
 CFLAGS="$CFLAGS -Wno-old-style-declaration";
 
 # Checks for libraries.
-AC_CHECK_LIB(ev, ev_io_init)
+AC_CHECK_LIB(ev, ev_run)
 AC_CHECK_LIB(sodium, sodium_init)
+
+AC_SEARCH_LIBS([sodium_init], [sodium], [], [
+  AC_MSG_ERROR([unable to find libsodium])
+])
+
+AC_SEARCH_LIBS([ev_run], [ev], [], [
+  AC_MSG_ERROR([unable to find libev])
+])
 
 # Checks for header files
 AC_CHECK_HEADERS([arpa/inet.h fcntl.h netinet/in.h stdlib.h string.h sys/ioctl.h sys/socket.h unistd.h endian.h])
 AC_CHECK_HEADERS([limits.h stddef.h])
 AC_CHECK_HEADERS([linux/if.h linux/if_tun.h])
 AC_CHECK_HEADERS([getopt.h stdarg.h errno.h])
-AC_CHECK_HEADERS([sodium.h ev.h])
+AC_CHECK_HEADERS([sodium.h], [], [AC_MSG_ERROR([Couldn't find or include sodium.h])])
+AC_CHECK_HEADERS([ev.h], [], [AC_MSG_ERROR([Couldn't find or include ev.h])])
 
 # Checks for typedefs, structures, and compiler characteristics
 AC_TYPE_PID_T
