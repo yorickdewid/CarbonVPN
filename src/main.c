@@ -43,7 +43,7 @@
 #define DEF_HEARTBEAT_INTERVAL	1800
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.7- See https://github.com/yorickdewid/CarbonVPN";
+const static unsigned char version[] = "CarbonVPN 0.7 - See https://github.com/yorickdewid/CarbonVPN";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
@@ -294,11 +294,10 @@ unsigned long inet_ntohl(char *ip_addr) {
 int fd_read(struct sock_ev_client *client, unsigned char *buf, int n){
 	int read;
 
-redo:
 	read = recv(client->net_fd, buf, n, 0);
 	if (read < 0) {
 		if (EAGAIN == errno) {
-			goto redo; //TODO
+			lprintf("[warn] Device bussy\n");
 		} else {
 			perror("read error");
 		}
@@ -696,14 +695,9 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 	if (sd < 0) {
 		if (errno != EAGAIN && errno != EWOULDBLOCK) {
 			perror("accept error");
+			free(client);
 			return;
 		}
-	}
-
-	// Set it non-blocking
-	if (setnonblock(sd)<0) {
-		perror("echo server socket nonblock");
-		return;
 	}
 
 	client->packet_cnt = PACKET_CNT;
@@ -728,12 +722,6 @@ int client_connect(EV_P_ char *remote_addr) {
  	// Create client socket
 	if ((sd = socket(AF_INET, SOCK_STREAM, 0))<0){
 		perror("socket error");
-		return -1;
-	}
-
-	// Set it non-blocking
-	if (setnonblock(sd)<0) {
-		perror("echo server socket nonblock");
 		return -1;
 	}
 
