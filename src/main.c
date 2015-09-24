@@ -28,7 +28,6 @@
 #include "logger.h"
 #include "conf.h"
 #include "vector.h"
-#include "snappy/snappy.h"
 #include "util.h"
 
 #define BUFSIZE			2048
