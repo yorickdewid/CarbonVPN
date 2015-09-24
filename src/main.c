@@ -38,7 +38,7 @@
 #define DEF_ROUTER_ADDR		"10.7.0.1"
 #define DEF_NETMASK		"255.255.255.0"
 #define DEF_MAX_CLIENTS		20
-#define PACKET_MAGIC		0xdeadbaba
+#define PACKET_MAGIC		0xe460
 #define PACKET_CNT		2048
 #define DEF_HEARTBEAT_INTERVAL	1800
 
@@ -100,7 +100,7 @@ struct handshake {
 } __attribute__ ((packed));
 
 struct wrapper {
-	int packet_chk;
+	short packet_chk;
 	unsigned int packet_cnt;
 	unsigned short data_len;
 	unsigned char mode;
@@ -396,7 +396,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 	int sesscnt = ntohl(encap.packet_cnt);
 	if (cfg.debug) lprintf("[dbug] [client %d] Packet count %u\n", client->index, sesscnt);
 
-	if (ntohl(encap.packet_chk) != PACKET_MAGIC) {
+	if (ntohs(encap.packet_chk) != PACKET_MAGIC) {
 		if (cfg.debug) lprintf("[dbug] [client %d] Packet dropped\n", client->index);
 		return;
 	}
@@ -425,7 +425,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 				if (!memcmp(ca_fp, cl_fp, crypto_generichash_BYTES)) {
 					lprintf("[info] [client %d] Signature verified\n", client->index);
 
-					encap.packet_chk = htonl(PACKET_MAGIC);
+					encap.packet_chk = htons(PACKET_MAGIC);
 					encap.packet_cnt = htonl(client->packet_cnt--);
 					encap.data_len = 0;
 					encap.mode = SERVER_HELLO;
@@ -474,7 +474,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					client->packet_cnt = PACKET_CNT;
 					crypto_box_easy(ciphertext, client->st_pk, crypto_box_PUBLICKEYBYTES, nonce, client->cl_lt_pk, cfg.sk);
 
-					encap.packet_chk = htonl(PACKET_MAGIC);
+					encap.packet_chk = htons(PACKET_MAGIC);
 					encap.packet_cnt = htonl(client->packet_cnt--);
 					encap.data_len = 0;
 					encap.mode = INIT_EPHEX;
@@ -514,7 +514,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 				crypto_box_beforenm(client->sshk, cl_st_pk, client->st_sk);
 				crypto_box_easy(ciphertext, client->st_pk, crypto_box_PUBLICKEYBYTES, nonce, client->cl_lt_pk, cfg.sk);
 
-				encap.packet_chk = htonl(PACKET_MAGIC);
+				encap.packet_chk = htons(PACKET_MAGIC);
 				encap.packet_cnt = htonl(client->packet_cnt--);
 				encap.data_len = 0;
 				encap.mode = RESP_EPHEX;
@@ -557,7 +557,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			break;
 		}
 		case PING: {
-			encap.packet_chk = htonl(PACKET_MAGIC);
+			encap.packet_chk = htons(PACKET_MAGIC);
 			encap.packet_cnt = htonl(client->packet_cnt--);
 			encap.data_len = 0;
 			encap.mode = PING_BACK;
@@ -584,7 +584,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		client->packet_cnt = PACKET_CNT;
 		crypto_box_easy(ciphertext, client->st_pk, crypto_box_PUBLICKEYBYTES, nonce, client->cl_lt_pk, cfg.sk);
 
-		encap.packet_chk = htonl(PACKET_MAGIC);
+		encap.packet_chk = htons(PACKET_MAGIC);
 		encap.packet_cnt = htonl(client->packet_cnt--);
 		encap.data_len = 0;
 		encap.mode = INIT_EPHEX;
@@ -631,7 +631,7 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 		crypto_box_easy_afternm(cbuffer, buffer, nread, nonce, client->sshk);
 
 		struct wrapper encap;
-		encap.packet_chk = htonl(PACKET_MAGIC);
+		encap.packet_chk = htons(PACKET_MAGIC);
 		encap.packet_cnt = htonl(client->packet_cnt--);
 		encap.data_len = htons(crypto_box_MACBYTES + nread);
 		encap.mode = STREAM;
@@ -762,7 +762,7 @@ int client_connect(EV_P_ char *remote_addr) {
 	vector_append(&vector_clients, (void *)conn_client);
 
 retry:
-	encap.packet_chk = htonl(PACKET_MAGIC);
+	encap.packet_chk = htons(PACKET_MAGIC);
 	encap.packet_cnt = htonl(conn_client->packet_cnt--);
 	encap.data_len = 0;
 	encap.mode = PING;
@@ -772,7 +772,7 @@ retry:
 		goto retry;
 	}
 
-	encap.packet_chk = htonl(PACKET_MAGIC);
+	encap.packet_chk = htons(PACKET_MAGIC);
 	encap.packet_cnt = htonl(conn_client->packet_cnt--);
 	encap.data_len = 0;
 	encap.mode = CLIENT_HELLO;
@@ -833,7 +833,7 @@ void ping_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 		if (!client)
 			continue;
 
-		encap.packet_chk = htonl(PACKET_MAGIC);
+		encap.packet_chk = htons(PACKET_MAGIC);
 		encap.packet_cnt = htonl(client->packet_cnt--);
 		encap.data_len = 0;
 		encap.mode = PING;
