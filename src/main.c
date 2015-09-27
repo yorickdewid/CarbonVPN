@@ -28,6 +28,7 @@
 #include "logger.h"
 #include "conf.h"
 #include "vector.h"
+#include "lz4/lz4.h"
 #include "util.h"
 
 #define BUFSIZE			2048
@@ -61,6 +62,7 @@ typedef struct {
 	unsigned char debug;
 	unsigned char max_conn;
 	unsigned char daemon;
+	unsigned char dgram;
 	unsigned int heartbeat_interval;
 	unsigned char cacert[crypto_sign_BYTES + CERTSIZE];
 	unsigned char capk[crypto_sign_PUBLICKEYBYTES];
@@ -372,6 +374,27 @@ void sigint_cb(EV_P_ struct ev_signal *watcher, int revents){
 	ev_io_stop(EV_A_ &w_accept);
 	ev_io_stop(EV_A_ &w_tun);
 	ev_unloop(EV_A_ EVUNLOOP_ALL);
+}
+
+/* This callback is called when data is readable on the UDP socket */
+void udp_cb(EV_P_ ev_io *watcher, int revents) {
+	char buffer[BUFSIZE];
+	struct sockaddr_in addr;
+	int addr_len = sizeof(addr);
+
+	puts("udp socket has become readable");
+	//socklen_t bytes = recvfrom(watcher->fd, buffer, sizeof(buffer)-1, 0, (struct sockaddr*)&addr, (socklen_t *)&addr_len);
+	recvfrom(watcher->fd, buffer, sizeof(buffer)-1, 0, (struct sockaddr*)&addr, (socklen_t *)&addr_len);
+
+	const char *txt = "PINGBACK\n";
+
+	// add a null to terminate the input, as we're going to use it as a string
+	//buffer[bytes] = '\0';
+	buffer[BUFSIZE-1] = '\0';
+	strncpy(buffer, txt, strlen(txt));
+
+	//printf("udp client said: %s", buffer);
+	sendto(watcher->fd, buffer, strlen(txt), 0, (struct sockaddr*)&addr, sizeof(addr));
 }
 
 /* Read client message */
@@ -774,7 +797,7 @@ retry:
   	return sd;
 }
 
-int server_init(int max_queue) {
+int stream_server_init(int max_queue) {
 	int sd;
 	struct sockaddr_in addr;
 
@@ -784,12 +807,12 @@ int server_init(int max_queue) {
 		return -1;
 	}
 
-	// Set it non-blocking
+	// Set sock non-blocking
 	if (setnonblock(sd)<0) {
 		perror("echo server socket nonblock");
 		return -1;
 	}
-
+	
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(DEF_PORT);
@@ -804,6 +827,31 @@ int server_init(int max_queue) {
 	// Start listing on the socket
 	if (listen(sd, max_queue)<0) {
 		perror("listen error");
+		return -1;
+	}
+
+	return sd;
+}
+
+int connless_server_init() {
+	int sd;
+	struct sockaddr_in addr;
+
+	// Create server socket
+	if ((sd = socket(AF_INET, SOCK_DGRAM, 0))<0){
+		perror("socket error");
+		return -1;
+	}
+
+
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(DEF_PORT);
+	addr.sin_addr.s_addr = INADDR_ANY;
+
+	// Bind socket to address
+	if (bind(sd, (struct sockaddr*)&addr, sizeof(addr))<0) {
+		perror("bind error");
 		return -1;
 	}
 
@@ -972,18 +1020,33 @@ int ev_start_loop(char *remote_addr, int flags) {
 		if (cfg.mtu)
 			set_mtu(sock, cfg.if_name, cfg.mtu);
 
-		sock_fd = server_init(cfg.max_conn);
-		if (sock_fd < 0)
-			return -1;
+		if (cfg.dgram) {
+			// datagram connection
+			lprint("[info] Using stateless connections\n");
+			sock_fd = connless_server_init();
+			if (sock_fd < 0)
+				return -1;
 
-		// Initialize and start a watcher to accepts client requests
-		ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);
-		ev_io_start(EV_A_ &w_accept);
+			ev_io udp_watcher;
+    		//ev_io_init(&udp_watcher, read_cb, sock_fd, EV_READ);
+    		ev_io_init(&udp_watcher, udp_cb, sock_fd, EV_READ);
+		    ev_io_start(EV_A_ &udp_watcher);
+		} else {
+			// stateful connection
+			lprint("[info] Using stateful connections\n");
+			sock_fd = stream_server_init(cfg.max_conn);
+			if (sock_fd < 0)
+				return -1;
 
-		// Periodic check on clients
-		if (cfg.heartbeat_interval) {
-			ev_periodic_init(&i_ping, ping_cb, 0., cfg.heartbeat_interval, 0);
-			ev_periodic_start(loop, &i_ping);
+			// Initialize and start a watcher to accepts client requests
+			ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);
+			ev_io_start(EV_A_ &w_accept);
+
+			// Periodic check on clients
+			if (cfg.heartbeat_interval) {
+				ev_periodic_init(&i_ping, ping_cb, 0., cfg.heartbeat_interval, 0);
+				ev_periodic_start(loop, &i_ping);
+			}
 		}
 	}
 
@@ -1047,6 +1110,7 @@ int main(int argc, char *argv[]) {
 	cfg.debug = 0;
 	cfg.max_conn = DEF_MAX_CLIENTS;
 	cfg.daemon = 0;
+	cfg.dgram = 1;
 	cfg.heartbeat_interval = DEF_HEARTBEAT_INTERVAL;
 
 	// Start log
