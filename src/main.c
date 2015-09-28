@@ -45,7 +45,7 @@
 #define DEF_CONN_UDP 	1
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.7 - See https://github.com/yorickdewid/CarbonVPN";
+const static unsigned char version[] = "CarbonVPN 0.8 - See https://github.com/yorickdewid/CarbonVPN";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
@@ -399,7 +399,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 
 	if (cfg.dgram) {
 		struct sockaddr_in addr;
-		int addr_len = sizeof(addr);
+		socklen_t addr_len = sizeof(addr);
 
 		read = recvfrom(watcher->fd, (unsigned char *)&encap, sizeof(encap), 0, (struct sockaddr*)&addr, (socklen_t *)&addr_len);
 
@@ -410,9 +410,9 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			if (!vclient)
 				continue;
 
-			unsigned long client_addr = (unsigned long)vclient->netaddr.sin_addr.s_addr;
-			if (client_addr == (unsigned long)addr.sin_addr.s_addr)
+			if ((unsigned long)vclient->netaddr.sin_addr.s_addr == (unsigned long)addr.sin_addr.s_addr && vclient->netaddr.sin_port == addr.sin_port) {
 				client = vclient;
+			}
 		}
 
 		if (!client) {
@@ -720,8 +720,8 @@ int tun_init(char *dev, int flags) {
 
 /* Accept client requests */
 void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
-	struct sockaddr_in client_addr;
-	socklen_t client_len = sizeof(client_addr);
+	struct sockaddr_in addr;
+	socklen_t addr_len = sizeof(addr);
 	int sd;
 	struct sock_ev_client *client = (struct sock_ev_client *)calloc(1, sizeof(struct sock_ev_client));
 	
@@ -731,7 +731,7 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 	}
 
 	// Accept client request
-	sd = accept(watcher->fd, (struct sockaddr *)&client_addr, &client_len);
+	sd = accept(watcher->fd, (struct sockaddr *)&addr, &addr_len);
 	if (sd < 0) {
 		if (errno != EAGAIN && errno != EWOULDBLOCK) {
 			perror("accept error");
@@ -740,6 +740,7 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 		}
 	}
 
+	client->netaddr = addr;
 	client->packet_cnt = PACKET_CNT;
 	client->net_fd = sd;
 	client->index = ++total_clients;
