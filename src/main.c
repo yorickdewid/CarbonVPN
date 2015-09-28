@@ -42,6 +42,7 @@
 #define PACKET_MAGIC		0xe460
 #define PACKET_CNT		2048
 #define DEF_HEARTBEAT_INTERVAL	1800
+#define DEF_CONN_UDP 	1
 
 EV_P;
 const static unsigned char version[] = "CarbonVPN 0.7 - See https://github.com/yorickdewid/CarbonVPN";
@@ -87,6 +88,7 @@ struct sock_ev_client {
 	ev_io io;
 	int net_fd;
 	int index;
+	struct sockaddr_in netaddr;
 	unsigned long hladdr;
 	unsigned int packet_cnt;
 	unsigned char st_pk[crypto_box_PUBLICKEYBYTES];
@@ -150,6 +152,8 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 		pcfg->daemon = value[0] == 't' ? 1 : 0;
 	} else if (!strcmp(name, "max_clients")) {
 		pcfg->max_conn = atoi(value);
+	} else if (!strcmp(name, "protocol") && !strcmp(value, "tcp")) {
+		pcfg->dgram = 0;
 	} else if (!strcmp(name, "cacert")) {
 		if (strlen(value) == (2*(crypto_sign_BYTES + CERTSIZE))) {
 			hextobin(pcfg->cacert, (unsigned char *)value, crypto_sign_BYTES + CERTSIZE);
@@ -340,10 +344,14 @@ int fd_read(struct sock_ev_client *client, unsigned char *buf, int n){
 	return read;
 }
 
-int fd_write(int fd, unsigned char *buf, int n) {
+int fd_write(struct sock_ev_client *client, unsigned char *buf, int n) {
 	int read;
 
-	read = send(fd, buf, n, 0);
+	if (cfg.dgram) {
+		read = sendto(client->net_fd, buf, n, 0, (struct sockaddr *)&client->netaddr, sizeof(client->netaddr));
+	} else {
+		read = send(client->net_fd, buf, n, 0);
+	}
 	if (read < 0) {
 		perror("send");
 	}
@@ -376,44 +384,53 @@ void sigint_cb(EV_P_ struct ev_signal *watcher, int revents){
 	ev_unloop(EV_A_ EVUNLOOP_ALL);
 }
 
-/* This callback is called when data is readable on the UDP socket */
-void udp_cb(EV_P_ ev_io *watcher, int revents) {
-	char buffer[BUFSIZE];
-	struct sockaddr_in addr;
-	int addr_len = sizeof(addr);
-
-	puts("udp socket has become readable");
-	//socklen_t bytes = recvfrom(watcher->fd, buffer, sizeof(buffer)-1, 0, (struct sockaddr*)&addr, (socklen_t *)&addr_len);
-	recvfrom(watcher->fd, buffer, sizeof(buffer)-1, 0, (struct sockaddr*)&addr, (socklen_t *)&addr_len);
-
-	const char *txt = "PINGBACK\n";
-
-	// add a null to terminate the input, as we're going to use it as a string
-	//buffer[bytes] = '\0';
-	buffer[BUFSIZE-1] = '\0';
-	strncpy(buffer, txt, strlen(txt));
-
-	//printf("udp client said: %s", buffer);
-	sendto(watcher->fd, buffer, strlen(txt), 0, (struct sockaddr*)&addr, sizeof(addr));
-}
-
 /* Read client message */
 void read_cb(EV_P_ struct ev_io *watcher, int revents){
 	unsigned char buffer[BUFSIZE];
 	unsigned char cbuffer[crypto_box_MACBYTES + BUFSIZE];
 	struct wrapper encap;
 	ssize_t read;
+	struct sock_ev_client *client = NULL;
 
 	if (EV_ERROR & revents) {
 		perror("got invalid event");
 		return;
 	}
 
-	struct sock_ev_client *client = (struct sock_ev_client *)watcher;
+	if (cfg.dgram) {
+		struct sockaddr_in addr;
+		int addr_len = sizeof(addr);
 
-	read = fd_read(client, (unsigned char *)&encap, sizeof(encap));
-	if (read <= 0)
-		return;
+		read = recvfrom(watcher->fd, (unsigned char *)&encap, sizeof(encap), 0, (struct sockaddr*)&addr, (socklen_t *)&addr_len);
+
+		int i;
+		struct sock_ev_client *vclient = NULL;
+		for (i=0; i<vector_clients.size; ++i) {
+			vclient = (struct sock_ev_client *)vector_get(&vector_clients, i);
+			if (!vclient)
+				continue;
+
+			unsigned long client_addr = (unsigned long)vclient->netaddr.sin_addr.s_addr;
+			if (client_addr == (unsigned long)addr.sin_addr.s_addr)
+				client = vclient;
+		}
+
+		if (!client) {
+			client = (struct sock_ev_client *)calloc(1, sizeof(struct sock_ev_client));
+			client->netaddr = addr;
+			client->packet_cnt = PACKET_CNT;
+			client->net_fd = watcher->fd;
+			client->index = ++total_clients;
+
+			vector_append(&vector_clients, (void *)client);
+		}
+	} else {
+		client = (struct sock_ev_client *)watcher;
+
+		read = fd_read(client, (unsigned char *)&encap, sizeof(encap));
+		if (read <= 0)
+			return;
+	}
 
 	int sesscnt = ntohl(encap.packet_cnt);
 	if (cfg.debug) lprintf("[dbug] [client %d] Packet count %u\n", client->index, sesscnt);
@@ -457,8 +474,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					strncpy(client_key.netmask, cfg.ip_netmask, 15);
 					client->hladdr = inet_ntohl(client_key.ip);
 
-					fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
-					fd_write(client->net_fd, (unsigned char *)&client_key, sizeof(client_key));
+					fd_write(client, (unsigned char *)&encap, sizeof(encap));
+					fd_write(client, (unsigned char *)&client_key, sizeof(client_key));
 
 					lprintf("[info] [client %d] Assigned %s\n", client->index, client_key.ip);
 				} else {
@@ -502,8 +519,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 					encap.mode = INIT_EPHEX;
 					memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-					fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
-					fd_write(client->net_fd, ciphertext, sizeof(ciphertext));
+					fd_write(client, (unsigned char *)&encap, sizeof(encap));
+					fd_write(client, ciphertext, sizeof(ciphertext));
 
 					int sock = set_ip(cfg.if_name, client_key.ip);
 					set_netmask(sock, cfg.if_name, client_key.netmask);
@@ -542,8 +559,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 				encap.mode = RESP_EPHEX;
 				memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-				fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
-				fd_write(client->net_fd, ciphertext, sizeof(ciphertext));
+				fd_write(client, (unsigned char *)&encap, sizeof(encap));
+				fd_write(client, ciphertext, sizeof(ciphertext));
 			}
 			break;
 		}
@@ -584,7 +601,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			encap.data_len = 0;
 			encap.mode = PING_BACK;
 
-			fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
+			fd_write(client, (unsigned char *)&encap, sizeof(encap));
 			break;
 		}
 		case PING_BACK:
@@ -612,8 +629,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		encap.mode = INIT_EPHEX;
 		memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-		fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
-		fd_write(client->net_fd, ciphertext, sizeof(ciphertext));
+		fd_write(client, (unsigned char *)&encap, sizeof(encap));
+		fd_write(client, ciphertext, sizeof(ciphertext));
 	}
 }
 
@@ -659,8 +676,8 @@ void tun_cb(EV_P_ struct ev_io *watcher, int revents) {
 		encap.mode = STREAM;
 		memcpy(encap.nonce, nonce, crypto_box_NONCEBYTES);
 
-		fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap));
-		fd_write(client->net_fd, cbuffer, crypto_box_MACBYTES + nread);
+		fd_write(client, (unsigned char *)&encap, sizeof(encap));
+		fd_write(client, cbuffer, crypto_box_MACBYTES + nread);
 
 		if (cfg.debug) lprintf("[dbug] [client %d] Wrote %d bytes to socket\n", client->index, crypto_box_MACBYTES + nread);
 		
@@ -725,7 +742,7 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 
 	client->packet_cnt = PACKET_CNT;
 	client->net_fd = sd;
-	client->index = ++total_clients; // Increment total_clients count
+	client->index = ++total_clients;
 	lprint("[info] Successfully connected with client\n");
 	lprintf("[info] %d client(s) connected\n", total_clients);
 
@@ -743,7 +760,7 @@ int client_connect(EV_P_ char *remote_addr) {
  	conn_client = (struct sock_ev_client *)calloc(1, sizeof(struct sock_ev_client));
 
  	// Create client socket
-	if ((sd = socket(AF_INET, SOCK_STREAM, 0))<0){
+	if ((sd = socket(AF_INET, cfg.dgram ? SOCK_DGRAM : SOCK_STREAM, 0))<0){
 		perror("socket error");
 		return -1;
 	}
@@ -752,7 +769,7 @@ int client_connect(EV_P_ char *remote_addr) {
 	conn_client->net_fd = sd;
 	conn_client->index = 0;
 
-	// initialize the send callback, but wait to start until there is data to write
+	// Initialize the send callback, but wait to start until there is data to write
 	ev_io_init(&conn_client->io, read_cb, sd, EV_READ);
 	ev_io_start(EV_A_ &conn_client->io);
 
@@ -760,15 +777,20 @@ int client_connect(EV_P_ char *remote_addr) {
 	remote.sin_family = AF_INET;
 	remote.sin_port = htons(DEF_PORT);
 	remote.sin_addr.s_addr = inet_addr(remote_addr);
+	conn_client->netaddr = remote;
 
-	int res = connect(sd, (struct sockaddr *)&remote, sizeof(remote));
-	if (res < 0) {
-		if (errno != EINPROGRESS) {
-			perror("connect error");
-			return -1;
+	if (!cfg.dgram) {
+		int res = connect(sd, (struct sockaddr *)&remote, sizeof(remote));
+		if (res < 0) {
+			if (errno != EINPROGRESS) {
+				perror("connect error");
+				return -1;
+			}
 		}
+		lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
+	} else {
+		lprintf("[info] Using stateless connection\n");
 	}
-	lprintf("[info] Connected to server %s\n", inet_ntoa(remote.sin_addr));
 
 	vector_append(&vector_clients, (void *)conn_client);
 
@@ -778,7 +800,7 @@ retry:
 	encap.data_len = 0;
 	encap.mode = PING;
 
-	if (fd_write(conn_client->net_fd, (unsigned char *)&encap, sizeof(encap))<0) {
+	if (fd_write(conn_client, (unsigned char *)&encap, sizeof(encap))<0) {
 		lprint("[warn] Retry pingback\n");
 		goto retry;
 	}
@@ -791,8 +813,8 @@ retry:
 	struct handshake client_key;
 	memcpy(client_key.pubkey, cfg.pk, crypto_sign_BYTES + crypto_box_PUBLICKEYBYTES + crypto_generichash_BYTES);
 
-	fd_write(conn_client->net_fd, (unsigned char *)&encap, sizeof(encap));
-	fd_write(conn_client->net_fd, (unsigned char *)&client_key, sizeof(client_key));
+	fd_write(conn_client, (unsigned char *)&encap, sizeof(encap));
+	fd_write(conn_client, (unsigned char *)&client_key, sizeof(client_key));
 
   	return sd;
 }
@@ -843,7 +865,6 @@ int connless_server_init() {
 		return -1;
 	}
 
-
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(DEF_PORT);
@@ -875,7 +896,7 @@ void ping_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 		encap.mode = PING;
 
 		lprintf("[info] [client %d] Sending ping\n", client->index);
-		if (fd_write(client->net_fd, (unsigned char *)&encap, sizeof(encap))<0) {
+		if (fd_write(client, (unsigned char *)&encap, sizeof(encap))<0) {
 			lprintf("[warn] [client %d] Pingback failed\n", client->index);
 		}
 	}
@@ -1028,9 +1049,8 @@ int ev_start_loop(char *remote_addr, int flags) {
 				return -1;
 
 			ev_io udp_watcher;
-    		//ev_io_init(&udp_watcher, read_cb, sock_fd, EV_READ);
-    		ev_io_init(&udp_watcher, udp_cb, sock_fd, EV_READ);
-		    ev_io_start(EV_A_ &udp_watcher);
+			ev_io_init(&udp_watcher, read_cb, sock_fd, EV_READ);
+			ev_io_start(EV_A_ &udp_watcher);
 		} else {
 			// stateful connection
 			lprint("[info] Using stateful connections\n");
@@ -1110,7 +1130,7 @@ int main(int argc, char *argv[]) {
 	cfg.debug = 0;
 	cfg.max_conn = DEF_MAX_CLIENTS;
 	cfg.daemon = 0;
-	cfg.dgram = 1;
+	cfg.dgram = DEF_CONN_UDP;
 	cfg.heartbeat_interval = DEF_HEARTBEAT_INTERVAL;
 
 	// Start log
