@@ -9,6 +9,7 @@
 #endif
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <arpa/inet.h>
@@ -288,6 +289,32 @@ char *incr_ip(char *ip_addr, unsigned char increment) {
 	sin.sin_addr.s_addr = htonl(nlenh);
 
 	inet_ntop(AF_INET, &sin.sin_addr, ip, INET6_ADDRSTRLEN);
+	return ip;
+}
+
+char *resolve_host(char *hostname) {
+	struct addrinfo hints, *servinfo, *p;
+	struct sockaddr_in *sin;
+	static char ip[INET_ADDRSTRLEN];
+	int rv;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC; // use AF_INET6 to force IPv6
+	hints.ai_socktype = SOCK_STREAM;
+
+	if ((rv = getaddrinfo(hostname, NULL, &hints, &servinfo))<0) {
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+		lprint("[erro] Cannot resolve host\n");
+		return NULL;
+	}
+
+	// Loop through all the results and connect to the first we can
+	for (p = servinfo; p != NULL; p = p->ai_next) {
+		sin = (struct sockaddr_in *)p->ai_addr;
+		strcpy(ip , inet_ntoa(sin->sin_addr));
+	}
+
+	freeaddrinfo(servinfo);
 	return ip;
 }
 
@@ -1060,6 +1087,9 @@ int ev_start_loop(char *remote_addr, int flags) {
 
 	/* Client or server mode */
 	if (!cfg.server) {
+		/* Resolve hostname */
+		remote_addr = resolve_host(remote_addr);
+
 		/* Assign the destination address */
 		int res = client_connect(EV_A_ remote_addr);
 		if (res < 0)
