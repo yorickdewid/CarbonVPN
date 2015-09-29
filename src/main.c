@@ -43,13 +43,14 @@
 #define PACKET_CNT		2048
 #define DEF_HEARTBEAT_INTERVAL	1800
 #define DEF_CONN_UDP 	1
+#define DEF_HEARTBEAT_TIMEOUT 	2
 
 EV_P;
 const static unsigned char version[] = "CarbonVPN 0.8 - See https://github.com/yorickdewid/CarbonVPN";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
-struct ev_io w_accept, w_tun;
+struct ev_io w_accept, w_tun, w_dgram;
 
 static struct sock_ev_client *conn_client = NULL;
 
@@ -89,6 +90,7 @@ struct sock_ev_client {
 	int net_fd;
 	int index;
 	struct sockaddr_in netaddr;
+	unsigned char hb_cnt;
 	unsigned long hladdr;
 	unsigned int packet_cnt;
 	unsigned char st_pk[crypto_box_PUBLICKEYBYTES];
@@ -431,6 +433,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		if (read <= 0)
 			return;
 	}
+
+	client->hb_cnt = DEF_HEARTBEAT_TIMEOUT;
 
 	int sesscnt = ntohl(encap.packet_cnt);
 	if (cfg.debug) lprintf("[dbug] [client %d] Packet count %u\n", client->index, sesscnt);
@@ -891,12 +895,33 @@ void ping_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 		if (!client)
 			continue;
 
+		if (!client->hb_cnt) {
+			if (!cfg.dgram) {
+				close(client->net_fd);
+			}
+			total_clients--;
+
+			lprintf("[info] [client %d] Dequeued due to timeout\n", client->index);
+			lprintf("[info] %d client(s) connected\n", total_clients);
+			ev_io_stop(EV_A_ &client->io);
+
+			sodium_memzero(client->sshk, sizeof(client->sshk));
+			sodium_memzero(client->st_sk, crypto_box_SECRETKEYBYTES);
+
+			vector_clients.data[i] = NULL;
+
+			free(client);
+			continue;
+		}
+
+		if (cfg.debug) lprintf("[dbug] [client %d] Heartbeat timeout %d\n", client->index, client->hb_cnt);
 		encap.packet_chk = htons(PACKET_MAGIC);
 		encap.packet_cnt = htonl(client->packet_cnt--);
 		encap.data_len = 0;
 		encap.mode = PING;
+		client->hb_cnt--;
 
-		lprintf("[info] [client %d] Sending ping\n", client->index);
+		lprintf("[info] [client %d] Sending ping heartbeat\n", client->index);
 		if (fd_write(client, (unsigned char *)&encap, sizeof(encap))<0) {
 			lprintf("[warn] [client %d] Pingback failed\n", client->index);
 		}
@@ -1049,9 +1074,13 @@ int ev_start_loop(char *remote_addr, int flags) {
 			if (sock_fd < 0)
 				return -1;
 
-			ev_io udp_watcher;
-			ev_io_init(&udp_watcher, read_cb, sock_fd, EV_READ);
-			ev_io_start(EV_A_ &udp_watcher);
+			// Stateless connections need smaller heartbeat
+			if (cfg.heartbeat_interval) {
+				cfg.heartbeat_interval = cfg.heartbeat_interval/2;
+			}
+
+			ev_io_init(&w_dgram, read_cb, sock_fd, EV_READ);
+			ev_io_start(EV_A_ &w_dgram);
 		} else {
 			// stateful connection
 			lprint("[info] Using stateful connections\n");
@@ -1062,12 +1091,12 @@ int ev_start_loop(char *remote_addr, int flags) {
 			// Initialize and start a watcher to accepts client requests
 			ev_io_init(&w_accept, accept_cb, sock_fd, EV_READ);
 			ev_io_start(EV_A_ &w_accept);
+		}
 
-			// Periodic check on clients
-			if (cfg.heartbeat_interval) {
-				ev_periodic_init(&i_ping, ping_cb, 0., cfg.heartbeat_interval, 0);
-				ev_periodic_start(loop, &i_ping);
-			}
+		// Periodic check on clients
+		if (cfg.heartbeat_interval) {
+			ev_periodic_init(&i_ping, ping_cb, 0., cfg.heartbeat_interval, 0);
+			ev_periodic_start(EV_A_ &i_ping);
 		}
 	}
 
