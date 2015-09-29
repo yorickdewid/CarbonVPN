@@ -760,6 +760,7 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 
 int client_connect(EV_P_ char *remote_addr) {
 	int sd;
+	static unsigned int retry_ping = 3;
  	struct sockaddr_in remote;
  	struct wrapper encap;
  	conn_client = (struct sock_ev_client *)calloc(1, sizeof(struct sock_ev_client));
@@ -806,8 +807,12 @@ retry:
 	encap.mode = PING;
 
 	if (fd_write(conn_client, (unsigned char *)&encap, sizeof(encap))<0) {
-		lprint("[warn] Retry pingback\n");
-		goto retry;
+		retry_ping--;
+		if (retry_ping>0) {
+			lprint("[warn] Retry pingback\n");
+			goto retry;
+		}
+		return -1;
 	}
 
 	encap.packet_chk = htons(PACKET_MAGIC);
