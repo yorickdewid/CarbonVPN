@@ -311,8 +311,12 @@ char *resolve_host(char *hostname) {
 	// Loop through all the results and connect to the first we can
 	for (p = servinfo; p != NULL; p = p->ai_next) {
 		sin = (struct sockaddr_in *)p->ai_addr;
-		strcpy(ip , inet_ntoa(sin->sin_addr));
+		if (sin->sin_family == AF_INET) {
+			strcpy(ip , inet_ntoa(sin->sin_addr));
+			break;
+		}
 	}
+	printf("%s\n", ip);
 
 	freeaddrinfo(servinfo);
 	return ip;
