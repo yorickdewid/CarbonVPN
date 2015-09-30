@@ -328,8 +328,14 @@ unsigned long inet_ntohl(char *ip_addr) {
 
 int fd_read(struct sock_ev_client *client, unsigned char *buf, int n){
 	int read;
+	socklen_t addr_len = sizeof(client->netaddr);
 
-	read = recv(client->net_fd, buf, n, 0);
+	if (cfg.dgram) {
+		read = recvfrom(client->net_fd, buf, n, 0, (struct sockaddr *)&client->netaddr, (socklen_t *)&addr_len);
+	} else {
+		read = recv(client->net_fd, buf, n, 0);
+	}
+
 	if (read < 0) {
 		if (EAGAIN == errno) {
 			lprintf("[warn] Device bussy\n");
@@ -457,9 +463,10 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		client = (struct sock_ev_client *)watcher;
 
 		read = fd_read(client, (unsigned char *)&encap, sizeof(encap));
-		if (read <= 0)
-			return;
 	}
+
+	if (read <= 0)
+		return;
 
 	client->hb_cnt = DEF_HEARTBEAT_TIMEOUT;
 
@@ -467,7 +474,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 	if (cfg.debug) lprintf("[dbug] [client %d] Packet count %u\n", client->index, sesscnt);
 
 	if (ntohs(encap.packet_chk) != PACKET_MAGIC) {
-		if (cfg.debug) lprintf("[dbug] [client %d] Packet dropped\n", client->index);
+		if (cfg.debug) lprintf("[dbug] [client %d] Invalid packet, packet dropped\n", client->index);
 		return;
 	}
 
@@ -635,11 +642,12 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			fd_write(client, (unsigned char *)&encap, sizeof(encap));
 			break;
 		}
-		case PING_BACK:
+		case PING_BACK: {
 			lprintf("[info] [client %d] Pingback heartbeat alive\n", client->index);
 			break;
+		}
 		default:
-			if (cfg.debug) lprintf("[dbug] [client %d] Packet dropped\n", client->index);
+			if (cfg.debug) lprintf("[dbug] [client %d] Request unknown, packet dropped\n", client->index);
 
 	}
 
@@ -723,6 +731,7 @@ int tun_init(char *dev, int flags) {
 		lprint("[erro] Cannot create interface\n");
 		return -1;
 	}
+
 
 	if (setnonblock(fd)<0) {
 		lprint("[erro] Cannot set nonblock\n");
@@ -871,7 +880,7 @@ int stream_server_init(int max_queue) {
 		perror("echo server socket nonblock");
 		return -1;
 	}
-	
+
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(DEF_PORT);

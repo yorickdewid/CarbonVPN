@@ -31,7 +31,7 @@ AC_SEARCH_LIBS([ev_run], [ev], [], [
 ])
 
 # Checks for header files
-AC_CHECK_HEADERS([arpa/inet.h fcntl.h netinet/in.h stdlib.h string.h sys/ioctl.h sys/socket.h unistd.h endian.h])
+AC_CHECK_HEADERS([arpa/inet.h fcntl.h netinet/in.h stdlib.h string.h sys/ioctl.h sys/socket.h netdb.h unistd.h endian.h])
 AC_CHECK_HEADERS([limits.h stddef.h])
 AC_CHECK_HEADERS([linux/if.h linux/if_tun.h])
 AC_CHECK_HEADERS([getopt.h stdarg.h errno.h])
