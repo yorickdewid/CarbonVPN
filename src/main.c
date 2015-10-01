@@ -50,7 +50,7 @@
 #define DEF_LOGFILE 	"/var/log/carbonvpn.log"
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.8.6 - See https://github.com/yorickdewid/CarbonVPN";
+const static unsigned char version[] = "CarbonVPN 0.8.7 - See https://github.com/yorickdewid/CarbonVPN";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
@@ -491,6 +491,11 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		}
 
 		if (!client) {
+			if (total_clients == cfg.max_conn) {
+				lprintf("[warn] Client rejected\n");
+				return;
+			}
+
 			client = (struct sock_ev_client *)calloc(1, sizeof(struct sock_ev_client));
 			client->netaddr = addr;
 			client->packet_cnt = PACKET_CNT;
@@ -811,6 +816,12 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 		return;
 	}
 
+	if (total_clients == cfg.max_conn) {
+		lprintf("[warn] Client rejected\n");
+		free(client);
+		return;
+	}
+
 	// Accept client request
 	sd = accept(watcher->fd, (struct sockaddr *)&addr, &addr_len);
 	if (sd < 0) {
@@ -911,7 +922,7 @@ retry:
   	return sd;
 }
 
-int stream_server_init(int max_queue) {
+int stream_server_init() {
 	int sd;
 	struct sockaddr_in addr;
 
@@ -945,7 +956,7 @@ int stream_server_init(int max_queue) {
 	}
 
 	// Start listing on the socket
-	if (listen(sd, max_queue)<0) {
+	if (listen(sd, cfg.max_conn)<0) {
 		perror("listen error");
 		return -1;
 	}
@@ -960,6 +971,12 @@ int connless_server_init() {
 	// Create server socket
 	if ((sd = socket(AF_INET, SOCK_DGRAM, 0))<0){
 		perror("socket error");
+		return -1;
+	}
+
+	// Set sock non-blocking
+	if (setnonblock(sd)<0) {
+		perror("nonblock error");
 		return -1;
 	}
 
@@ -1186,7 +1203,7 @@ int ev_start_loop(char *remote_addr, int flags) {
 		} else {
 			// stateful connection
 			lprint("[info] Using stateful connections\n");
-			sock_fd = stream_server_init(cfg.max_conn);
+			sock_fd = stream_server_init();
 			if (sock_fd < 0)
 				return -1;
 
