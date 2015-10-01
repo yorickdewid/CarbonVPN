@@ -3,6 +3,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
+#include <syslog.h>
 
 #ifndef __USE_BSD
 #define __USE_BSD
@@ -47,7 +49,7 @@
 #define DEF_HEARTBEAT_TIMEOUT 	2
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.8 - See https://github.com/yorickdewid/CarbonVPN";
+const static unsigned char version[] = "CarbonVPN 0.8.5 - See https://github.com/yorickdewid/CarbonVPN";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
@@ -316,7 +318,6 @@ char *resolve_host(char *hostname) {
 			break;
 		}
 	}
-	printf("%s\n", ip);
 
 	freeaddrinfo(servinfo);
 	return ip;
@@ -332,8 +333,11 @@ unsigned long inet_ntohl(char *ip_addr) {
 
 int fd_read(struct sock_ev_client *client, unsigned char *buf, int n){
 	int read;
+	int c = 0;
 	socklen_t addr_len = sizeof(client->netaddr);
+	struct timespec tsp = {0, 200};
 
+r_again:
 	if (cfg.dgram) {
 		read = recvfrom(client->net_fd, buf, n, 0, (struct sockaddr *)&client->netaddr, (socklen_t *)&addr_len);
 	} else {
@@ -341,8 +345,11 @@ int fd_read(struct sock_ev_client *client, unsigned char *buf, int n){
 	}
 
 	if (read < 0) {
-		if (EAGAIN == errno) {
-			lprintf("[warn] Device bussy\n");
+		if (EAGAIN == errno || EWOULDBLOCK == errno) {
+			if (c++ < 20) {
+				nanosleep(&tsp, NULL);
+				goto r_again;
+			}
 		} else {
 			perror("read error");
 		}
@@ -385,14 +392,26 @@ int fd_read(struct sock_ev_client *client, unsigned char *buf, int n){
 
 int fd_write(struct sock_ev_client *client, unsigned char *buf, int n) {
 	int read;
+	int c = 0;
+	struct timespec tsp = {0, 200};
 
+s_again:
 	if (cfg.dgram) {
 		read = sendto(client->net_fd, buf, n, 0, (struct sockaddr *)&client->netaddr, sizeof(client->netaddr));
 	} else {
 		read = send(client->net_fd, buf, n, 0);
 	}
+
 	if (read < 0) {
-		perror("send");
+		if (EAGAIN == errno || EWOULDBLOCK == errno) {
+			if (c++ < 10) {
+				nanosleep(&tsp, NULL);
+				goto s_again;
+			}
+		} else {
+			perror("write error");
+		}
+		return read;
 	}
 
 	return read;
@@ -622,6 +641,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		}
 		case STREAM: {
 			read = fd_read(client, (unsigned char *)&cbuffer, ntohs(encap.data_len));
+			if (read <= 0)
+				return;
 
 			if (crypto_box_open_easy_afternm(buffer, cbuffer, ntohs(encap.data_len), encap.nonce, client->sshk) != 0) {
 				if (cfg.debug) lprintf("[dbug] [client %d] Unable to decrypt packet\n", client->index);
@@ -736,7 +757,6 @@ int tun_init(char *dev, int flags) {
 		return -1;
 	}
 
-
 	if (setnonblock(fd)<0) {
 		lprint("[erro] Cannot set nonblock\n");
 		return -1;
@@ -815,6 +835,11 @@ int client_connect(EV_P_ char *remote_addr) {
 	conn_client->net_fd = sd;
 	conn_client->index = 0;
 
+	if (setnonblock(conn_client->net_fd)<0) {
+		lprint("[erro] Cannot set nonblock\n");
+		return -1;
+	}
+
 	// Initialize the send callback, but wait to start until there is data to write
 	ev_io_init(&conn_client->io, read_cb, sd, EV_READ);
 	ev_io_start(EV_A_ &conn_client->io);
@@ -826,7 +851,7 @@ int client_connect(EV_P_ char *remote_addr) {
 	conn_client->netaddr = remote;
 
 	if (!cfg.dgram) {
-		int res = connect(sd, (struct sockaddr *)&remote, sizeof(remote));
+		int res = connect(conn_client->net_fd, (struct sockaddr *)&remote, sizeof(remote));
 		if (res < 0) {
 			if (errno != EINPROGRESS) {
 				perror("connect error");
@@ -1213,6 +1238,7 @@ int main(int argc, char *argv[]) {
 
 	// Start log
 	start_log();
+	setlogmask(LOG_UPTO(LOG_NOTICE));
 
 	// Initialize NaCl
 	if (sodium_init()<0)
