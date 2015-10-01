@@ -50,7 +50,7 @@
 #define DEF_LOGFILE 	"/var/log/carbonvpn.log"
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.8.7 - See https://github.com/yorickdewid/CarbonVPN";
+const static unsigned char version[] = "CarbonVPN 0.8.8 - See https://github.com/yorickdewid/CarbonVPN";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
@@ -493,7 +493,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		if (!client) {
 			if (total_clients == cfg.max_conn) {
 				lprintf("[warn] Client rejected\n");
-				if (cfg.debug) lprint("[dbug] Maximum clients reached\n");
+				if (cfg.debug) lprint("[dbug] Maximum number of clients reached\n");
 				return;
 			}
 
@@ -821,7 +821,7 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 
 	if (total_clients == cfg.max_conn) {
 		lprintf("[warn] Client rejected\n");
-		if (cfg.debug) lprint("[dbug] Maximum clients reached\n");
+		if (cfg.debug) lprint("[dbug] Maximum number of clients reached\n");
 		free(client);
 		return;
 	}
@@ -1009,6 +1009,11 @@ void ping_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 	int i;
 	struct wrapper encap;
 	struct sock_ev_client *client = NULL;
+
+	if (vector_clients.size > cfg.max_conn && (vector_clients.size/2) > total_clients) {
+		vector_rebuild(&vector_clients, cfg.max_conn);
+		if (cfg.debug) lprintf("[dbug] Rebuilt client pool\n");
+	}
 
 	for (i=0; i<vector_clients.size; ++i) {
 		client = (struct sock_ev_client *)vector_get(&vector_clients, i);

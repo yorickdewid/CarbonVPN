@@ -8,16 +8,11 @@ typedef struct {
 	void **data;	// array of integers we're storing
 } vector_t;
 
+void vector_rebuild(vector_t *vector, int capacity);
 void vector_init(vector_t *vector, int capacity);
-
 void vector_append(vector_t *vector, void *value);
-
 void *vector_get(vector_t *vector, int index);
-
 void vector_set(vector_t *vector, int index, void *value);
-
-void vector_double_capacity_if_full(vector_t *vector);
-
 void vector_free(vector_t *vector);
 
 #endif // VECTOR_H
