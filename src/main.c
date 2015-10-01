@@ -203,6 +203,12 @@ int setnonblock(int fd) {
 	return fcntl(fd, F_SETFL, flags);
 }
 
+int setreuse(int sock_fd) {
+	int optval = 1;
+
+	return setsockopt(sock_fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+}
+
 int create_socket() {
 	int sock_fd = 0;
 
@@ -917,7 +923,13 @@ int stream_server_init(int max_queue) {
 
 	// Set sock non-blocking
 	if (setnonblock(sd)<0) {
-		perror("echo server socket nonblock");
+		perror("nonblock error");
+		return -1;
+	}
+
+	// Reuse the socket options
+	if (setreuse(sd)<0) {
+		perror("reuse error");
 		return -1;
 	}
 
@@ -948,6 +960,12 @@ int connless_server_init() {
 	// Create server socket
 	if ((sd = socket(AF_INET, SOCK_DGRAM, 0))<0){
 		perror("socket error");
+		return -1;
+	}
+
+	// Reuse the socket options
+	if (setreuse(sd)<0) {
+		perror("reuse error");
 		return -1;
 	}
 
@@ -1309,9 +1327,6 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	if (cfg.logfile)
-		start_log(cfg.logfile);
-
 	if (argc > 0) {
 		if (!strcmp(argv[0], "genca")) {
 			cert_genca();
@@ -1344,6 +1359,9 @@ int main(int argc, char *argv[]) {
 		lprintf("[erro] No client private key in config, see gencert\n");
 		goto cleanup;
 	}
+
+	if (cfg.logfile)
+		start_log(cfg.logfile);
 
 	if (cfg.daemon)
 		daemonize(remote_ip, flags);
