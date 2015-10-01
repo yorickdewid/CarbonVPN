@@ -47,6 +47,7 @@
 #define DEF_HEARTBEAT_INTERVAL	1800
 #define DEF_CONN_UDP 	1
 #define DEF_HEARTBEAT_TIMEOUT 	2
+#define DEF_LOGFILE 	"/var/log/carbonvpn.log"
 
 EV_P;
 const static unsigned char version[] = "CarbonVPN 0.8.6 - See https://github.com/yorickdewid/CarbonVPN";
@@ -63,6 +64,7 @@ typedef struct {
 	char *if_name;
 	char *ip;
 	char *ip_netmask;
+	char *logfile;
 	unsigned short mtu;
 	unsigned char debug;
 	unsigned char max_conn;
@@ -148,6 +150,13 @@ int parse_config(void *_pcfg, const char *section, const char *name, const char 
 	} else if (!strcmp(name, "netmask")) {
 		free(pcfg->ip_netmask);
 		pcfg->ip_netmask = c_strdup(value);
+	} else if (!strcmp(name, "log")) {
+		if (!strcmp(value, "false")) {
+			pcfg->logfile = NULL;
+		} else {
+			free(pcfg->logfile);
+			pcfg->logfile = c_strdup(value);
+		}
 	} else if (!strcmp(name, "mtu")) {
 		pcfg->mtu = atoi(value);
 	} else if (!strcmp(name, "heartbeat")) {
@@ -1237,10 +1246,10 @@ int main(int argc, char *argv[]) {
 	cfg.max_conn = DEF_MAX_CLIENTS;
 	cfg.daemon = 0;
 	cfg.dgram = DEF_CONN_UDP;
+	cfg.logfile = c_strdup(DEF_LOGFILE);
 	cfg.heartbeat_interval = DEF_HEARTBEAT_INTERVAL;
 
 	// Start log
-	start_log();
 	setlogmask(LOG_UPTO(LOG_NOTICE));
 	openlog(argv[0], LOG_CONS | LOG_PID, LOG_USER);
 
@@ -1293,12 +1302,15 @@ int main(int argc, char *argv[]) {
 
 	/* Parse config */
 	if (config) {
-		lprint("[info] Loading config from file\n");
+		lprintf("[info] Loading config from %s\n", config_file);
 		if (conf_parse(config_file, parse_config, &cfg) < 0) {
 			lprintf("[erro] Cannot open %s\n", config_file);
 			goto cleanup;
 		}
 	}
+
+	if (cfg.logfile)
+		start_log(cfg.logfile);
 
 	if (argc > 0) {
 		if (!strcmp(argv[0], "genca")) {
@@ -1344,6 +1356,7 @@ cleanup:
 	free(cfg.if_name);
 	free(cfg.ip);
 	free(cfg.ip_netmask);
+	free(cfg.logfile);
 
 	vector_free(&vector_clients);
 

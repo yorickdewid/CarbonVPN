@@ -1,7 +1,7 @@
 #ifndef LOGGER_H
 #define LOGGER_H
 
-int start_log();
+int start_log(char *logfile);
 void log_tty(char b);
 void lprintf(const char *format, ...);
 void lprint(const char *str);

@@ -4,14 +4,12 @@
 #include <time.h>
 #include "logger.h"
 
-#define LOGFILE		"carbonvpn.log"
-
 static FILE *fp = NULL;
 static char log_tty_std = 1;
 
-int start_log() {
+int start_log(char *logfile) {
 	if (!fp) {
-		fp = fopen(LOGFILE, "a");
+		fp = fopen(logfile, "a");
 		if (fp)
 			setvbuf(fp, NULL, _IOLBF, 1024);
 		else {
