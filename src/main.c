@@ -493,6 +493,7 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 		if (!client) {
 			if (total_clients == cfg.max_conn) {
 				lprintf("[warn] Client rejected\n");
+				if (cfg.debug) lprint("[dbug] Maximum clients reached\n");
 				return;
 			}
 
@@ -501,6 +502,8 @@ void read_cb(EV_P_ struct ev_io *watcher, int revents){
 			client->packet_cnt = PACKET_CNT;
 			client->net_fd = watcher->fd;
 			client->index = ++total_clients;
+			lprint("[info] Successfully connected with client\n");
+			lprintf("[info] %d client(s) connected\n", total_clients);
 
 			vector_append(&vector_clients, (void *)client);
 		}
@@ -818,6 +821,7 @@ void accept_cb(EV_P_ struct ev_io *watcher, int revents) {
 
 	if (total_clients == cfg.max_conn) {
 		lprintf("[warn] Client rejected\n");
+		if (cfg.debug) lprint("[dbug] Maximum clients reached\n");
 		free(client);
 		return;
 	}
