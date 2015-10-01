@@ -49,7 +49,7 @@
 #define DEF_HEARTBEAT_TIMEOUT 	2
 
 EV_P;
-const static unsigned char version[] = "CarbonVPN 0.8.5 - See https://github.com/yorickdewid/CarbonVPN";
+const static unsigned char version[] = "CarbonVPN 0.8.6 - See https://github.com/yorickdewid/CarbonVPN";
 static int total_clients = 0;
 vector_t vector_clients;
 int tap_fd;
@@ -126,6 +126,7 @@ void usage(char *name) {
 	fprintf(stderr, "  -a              Use TAP interface (Default: TUN)\n");
 	fprintf(stderr, "  -d              Run daemon in background\n");
 	fprintf(stderr, "  -v              Verbose output\n");
+	fprintf(stderr, "  -V              Print version\n");
 	fprintf(stderr, "  -h              This help text\n\n");
 	fprintf(stderr, "Commands\n");
 	fprintf(stderr, "  genca           Generate CA certificate\n");
@@ -418,6 +419,7 @@ s_again:
 }
 
 void sigint_cb(EV_P_ struct ev_signal *watcher, int revents){
+	syslog(LOG_NOTICE, "Starting daemon");
 	lprint("[info] Shutdown daemon\n");
 
 	int i;
@@ -1183,6 +1185,7 @@ int ev_start_loop(char *remote_addr, int flags) {
 int daemonize(char *remote_addr, int flags) {
 	pid_t pid, sid;
 
+	syslog(LOG_NOTICE, "Starting daemon");
 	lprintf("[info] Starting daemon in background\n");
 	pid = fork();
 	if (pid < 0) {
@@ -1239,13 +1242,14 @@ int main(int argc, char *argv[]) {
 	// Start log
 	start_log();
 	setlogmask(LOG_UPTO(LOG_NOTICE));
+	openlog(argv[0], LOG_CONS | LOG_PID, LOG_USER);
 
 	// Initialize NaCl
 	if (sodium_init()<0)
 		goto cleanup;
 
 	/* Check command line options */
-	while ((option = getopt(argc, argv, "f:i:c:p:ahvd"))>0){
+	while ((option = getopt(argc, argv, "f:i:c:p:ahvVd"))>0){
 		switch (option) {
 			case 'd':
 				cfg.daemon = 1;
@@ -1253,6 +1257,9 @@ int main(int argc, char *argv[]) {
 			case 'v':
 				cfg.debug = 1;
 				break;
+			case 'V':
+				puts((char *)version);
+				return 1;
 			case 'h':
 				usage(argv[0]);
 				return 1;
@@ -1341,6 +1348,7 @@ cleanup:
 	vector_free(&vector_clients);
 
 	stop_log();
+	closelog();
 
 	return 0;
 }
