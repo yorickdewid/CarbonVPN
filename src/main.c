@@ -978,12 +978,6 @@ int connless_server_init() {
 		return -1;
 	}
 
-	// Set sock non-blocking
-	if (setnonblock(sd)<0) {
-		perror("nonblock error");
-		return -1;
-	}
-
 	// Reuse the socket options
 	if (setreuse(sd)<0) {
 		perror("reuse error");
